@@ -1,0 +1,360 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>Progress Nest v2.2</title>
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Nest">
+  <link rel="apple-touch-icon" href="https://dummyimage.com/192x192/0891b2/ffffff.png&text=PN">
+  <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdn.jsdelivr.net/npm/canvas-confetti@1.6.0/dist/confetti.browser.min.js"></script>
+  <style>
+    @keyframes slap { 0% { transform: scale(5) rotate(30deg); opacity: 0; } 70% { transform: scale(0.9) rotate(-5deg); opacity: 1; } 100% { transform: scale(1) rotate(var(--rot)); opacity: 1; } }
+    .animate-slap { animation: slap 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275) forwards; opacity: 0; }
+    .crack-overlay { background-image: url('https://www.transparenttextures.com/patterns/cracked-glass-panel.png'); pointer-events: none; mix-blend-mode: overlay; }
+    .no-scrollbar::-webkit-scrollbar { display: none; }
+    * { -webkit-tap-highlight-color: transparent; }
+  </style>
+</head>
+<body class="bg-slate-950 text-slate-100 font-sans min-h-screen p-4 md:p-8 overflow-x-hidden selection:bg-indigo-500/30">
+  <div id="root"></div>
+
+  <script type="text/babel">
+    const { useState, useEffect } = React;
+
+    function App() {
+      const [tasks, setTasks] = useState([]);
+      const [activeTab, setActiveTab] = useState('canvas');
+      const [activeTaskId, setActiveTaskId] = useState(null);
+      const [showArchiveAnima, setShowArchiveAnima] = useState(false);
+      const [isEditMode, setIsEditMode] = useState(false);
+      const [zoom, setZoom] = useState(120); 
+      const [history, setHistory] = useState([]);
+      const [newSubText, setNewSubText] = useState('');
+      const [isEditingTitle, setIsEditingTitle] = useState(false);
+
+      const [title, setTitle] = useState('');
+      const [type, setType] = useState('persistent');
+      const [freq, setFreq] = useState('once');
+      const [weight, setWeight] = useState('1');
+      const [selectedDays, setSelectedDays] = useState([]);
+      const [selectedDates, setSelectedDates] = useState([]);
+      const [scheduledDate, setScheduledDate] = useState(new Date().toISOString().split('T')[0]);
+      const [showOptions, setShowOptions] = useState(false);
+
+      useEffect(() => {
+        let saved = localStorage.getItem('nest-v2-data');
+        let savedHistory = localStorage.getItem('nest-v2-history');
+        let lastLogin = localStorage.getItem('nest-v2-login');
+
+        if (!saved) {
+          const oldKeys = ['nest-v19-data', 'nest-v18-data', 'nest-v17-data', 'nest-v16-data'];
+          for (let key of oldKeys) {
+            saved = localStorage.getItem(key);
+            if (saved) {
+              savedHistory = localStorage.getItem(key.replace('-data', '-history'));
+              lastLogin = localStorage.getItem(key.replace('-data', '-login'));
+              break; 
+            }
+          }
+        }
+
+        if (saved) {
+          const parsed = JSON.parse(saved);
+          const today = new Date().toLocaleDateString();
+          if (lastLogin && lastLogin !== today) {
+             setTasks(parsed.map(t => t.type === 'volatile' ? {...t, subTasks: t.subTasks.map(st => ({...st, completed: false}))} : t));
+          } else { setTasks(parsed); }
+          localStorage.setItem('nest-v2-login', today);
+        }
+        if (savedHistory) setHistory(JSON.parse(savedHistory));
+      }, []);
+
+      useEffect(() => {
+        localStorage.setItem('nest-v2-data', JSON.stringify(tasks));
+        localStorage.setItem('nest-v2-history', JSON.stringify(history));
+      }, [tasks, history]);
+
+      const handleFreqChange = (newFreq) => {
+        setFreq(newFreq);
+        const now = new Date();
+        if (newFreq === 'weekly' && selectedDays.length === 0) setSelectedDays([now.getDay()]);
+        if (newFreq === 'monthly' && selectedDates.length === 0) setSelectedDates([now.getDate()]);
+      };
+
+      const fireConfetti = () => confetti({ particleCount: 150, spread: 70, origin: { y: 0.6 }, colors: ['#22d3ee', '#818cf8', '#fbbf24'] });
+
+      const exportMemory = () => {
+        navigator.clipboard.writeText(JSON.stringify(tasks));
+        alert("記憶（全データ）をコピーしました！");
+      };
+
+      const importMemory = () => {
+        const raw = prompt("コピーした記憶（JSON）を貼り付けてください：");
+        if (!raw) return;
+        try {
+          const parsed = JSON.parse(raw);
+          if (Array.isArray(parsed)) {
+            setTasks(parsed);
+            alert("記憶が正常に注入されました。");
+          }
+        } catch(e) { alert("無効な記憶フォーマットです。"); }
+      };
+
+      const addParentTask = (overrideTitle) => {
+        const finalTitle = overrideTitle || title;
+        if (!finalTitle) return;
+        setHistory(prev => [finalTitle, ...prev.filter(h => h !== finalTitle)].slice(0, 6));
+        
+        let finalDays = selectedDays;
+        let finalDates = selectedDates;
+        const now = new Date();
+        if (freq === 'weekly' && finalDays.length === 0) finalDays = [now.getDay()];
+        if (freq === 'monthly' && finalDates.length === 0) finalDates = [now.getDate()];
+
+        setTasks([...tasks, {
+          id: Date.now().toString(),
+          title: finalTitle, type, freq, weight: parseInt(weight),
+          selectedDays: finalDays, selectedDates: finalDates, scheduledDate,
+          subTasks: [], isArchived: false, phase: 1, lastUpdated: Date.now(),
+          pos: { x: Math.random() * 75 + 5, y: Math.random() * 75 + 5, rot: (Math.random() - 0.5) * 30 }
+        }]);
+        setTitle('');
+        setShowOptions(false);
+      };
+
+      const archiveTaskAction = (task) => {
+        fireConfetti();
+        if (navigator.vibrate) navigator.vibrate(50);
+        const updatedSubTasks = task.subTasks.length === 0 ? [{ id: 'auto', text: '完了', completed: true }] : task.subTasks.map(st => ({...st, completed: true}));
+        setTasks(prev => prev.map(t => t.id === task.id ? {...t, subTasks: updatedSubTasks, isArchived: true, archivedAt: new Date().toISOString()} : t));
+        setActiveTaskId(null);
+      };
+
+      const levelUpTask = (pId) => {
+        fireConfetti();
+        setTasks(tasks.map(t => t.id === pId ? { ...t, phase: t.phase + 1, subTasks: t.subTasks.map(st => ({...st, completed: false})), lastUpdated: Date.now() } : t));
+        setActiveTaskId(null);
+      };
+
+      const isVisibleToday = (task) => {
+        if (isEditMode) return true;
+        const now = new Date();
+        const todayStr = now.toISOString().split('T')[0];
+        if (task.freq === 'once') return !task.scheduledDate || todayStr >= task.scheduledDate;
+        if (task.freq === 'daily') return true;
+        if (task.freq === 'weekly') return task.selectedDays.includes(now.getDay());
+        if (task.freq === 'monthly') return task.selectedDates.includes(now.getDate());
+        return false;
+      };
+
+      const canvasTasks = tasks.filter(t => !t.isArchived && isVisibleToday(t));
+      const archivedTasks = tasks.filter(t => t.isArchived);
+      const activeTask = tasks.find(t => t.id === activeTaskId);
+
+      return (
+        <div className="max-w-7xl mx-auto pb-24 px-2 sm:px-4">
+          <header className="mb-6 flex justify-between items-center border-b border-slate-800 pb-4 flex-col md:flex-row gap-4">
+            <h1 className="text-3xl font-black text-transparent bg-clip-text bg-gradient-to-r from-cyan-400 via-indigo-500 to-amber-500 tracking-tighter">Progress Nest</h1>
+            <div className="flex bg-slate-900 rounded-xl p-1 border border-slate-800 shadow-xl">
+              <button onClick={() => setActiveTab('canvas')} className={`px-6 py-2 rounded-lg text-sm font-bold transition-all ${activeTab === 'canvas' ? 'bg-slate-700 text-white shadow-lg' : 'text-slate-500'}`}>🎨 CANVAS</button>
+              <button onClick={() => { setActiveTab('archive'); setShowArchiveAnima(false); setTimeout(()=>setShowArchiveAnima(true),50); }} className={`px-6 py-2 rounded-lg text-sm font-bold transition-all ${activeTab === 'archive' ? 'bg-slate-700 text-white shadow-lg' : 'text-slate-500'}`}>🏛️ MASTERPIECE</button>
+            </div>
+          </header>
+
+          {activeTab === 'canvas' && (
+            <div className="space-y-6">
+              <div className="bg-slate-900/80 p-4 rounded-3xl border border-slate-800 max-w-3xl mx-auto shadow-2xl backdrop-blur-md">
+                <div className="flex flex-col sm:flex-row gap-2">
+                  <input type="text" value={title} onChange={e=>setTitle(e.target.value)} placeholder="新しいタスクを生成..." className="flex-1 bg-slate-950 border border-slate-800 rounded-2xl px-5 py-4 font-bold text-lg outline-none focus:ring-2 ring-indigo-500 min-w-0"/>
+                  <div className="flex gap-2 w-full sm:w-auto">
+                    <button onClick={() => setShowOptions(!showOptions)} className={`flex-1 sm:flex-none px-5 py-4 rounded-2xl border transition-all ${showOptions ? 'bg-indigo-600 border-indigo-500 text-white' : 'bg-slate-800 border-slate-700 text-slate-400'}`}>⚙️</button>
+                    <button onClick={() => addParentTask()} className="flex-1 sm:flex-none bg-indigo-600 px-8 py-4 rounded-2xl font-black text-sm text-white shadow-lg active:scale-95 transition-all">追加</button>
+                  </div>
+                </div>
+                {history.length > 0 && !showOptions && (
+                  <div className="flex flex-wrap gap-2 mt-4">
+                    {history.map((h, i) => (<button key={i} onClick={() => addParentTask(h)} className="text-[10px] bg-slate-800/50 text-slate-400 px-3 py-1.5 rounded-full border border-slate-800 hover:text-white transition-all">+ {h}</button>))}
+                  </div>
+                )}
+                {showOptions && (
+                  <div className="mt-4 pt-4 border-t border-slate-800 animate-in slide-in-from-top-2">
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                      <div className="space-y-3">
+                        <label className="text-[10px] text-slate-500 font-black uppercase tracking-widest">Type & Size</label>
+                        <div className="flex gap-1 bg-slate-950 p-1 rounded-xl border border-slate-800">
+                          <button onClick={()=>setType('persistent')} className={`flex-1 py-2 text-[11px] font-black rounded-lg ${type==='persistent'?'bg-slate-800 text-cyan-400 shadow-inner':'text-slate-600'}`}>永続 (成長)</button>
+                          <button onClick={()=>setType('volatile')} className={`flex-1 py-2 text-[11px] font-black rounded-lg ${type==='volatile'?'bg-slate-800 text-orange-400 shadow-inner':'text-slate-600'}`}>揮発 (維持)</button>
+                        </div>
+                        <div className="flex gap-1 bg-slate-950 p-1 rounded-xl border border-slate-800">
+                          {['1','2','3'].map(w => (<button key={w} onClick={()=>setWeight(w)} className={`flex-1 py-2 text-[11px] font-black rounded-lg ${weight===w?'bg-slate-800 text-white shadow-inner':'text-slate-600'}`}>{w==='1'?'小':w==='2'?'中':'大'}</button>))}
+                        </div>
+                      </div>
+                      <div className="space-y-3">
+                        <label className="text-[10px] text-slate-500 font-black uppercase tracking-widest">Schedule</label>
+                        <div className="flex gap-1 bg-slate-950 p-1 rounded-xl border border-slate-800">
+                          {['once','daily','weekly','monthly'].map(f => (<button key={f} onClick={()=>handleFreqChange(f)} className={`flex-1 py-2 text-[11px] font-black rounded-lg ${freq===f?'bg-slate-800 text-white shadow-inner':'text-slate-600'}`}>{f.toUpperCase()}</button>))}
+                        </div>
+                        {freq === 'once' && <input type="date" value={scheduledDate} onChange={e=>setScheduledDate(e.target.value)} className="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-2.5 text-xs text-indigo-400 font-bold" />}
+                        {freq === 'weekly' && (
+                          <div className="flex justify-between mt-2">
+                            {['日','月','火','水','木','金','土'].map((d,i) => (<button key={i} onClick={()=>setSelectedDays(prev=>prev.includes(i)?prev.filter(x=>x!==i):[...prev,i])} className={`w-8 h-8 rounded-full text-[10px] font-black border ${selectedDays.includes(i)?'bg-indigo-600 border-indigo-400 text-white':'border-slate-800 text-slate-500'}`}>{d}</button>))}
+                          </div>
+                        )}
+                        {freq === 'monthly' && (
+                          <div className="grid grid-cols-7 gap-1 mt-2">
+                            {[...Array(31)].map((_, i) => { 
+                              const d=i+1; const isS = selectedDates.includes(d); 
+                              return (<button key={d} onClick={()=>setSelectedDates(p=>isS?p.filter(x=>x!==d):[...p,d])} className={`text-[9px] py-1.5 rounded-lg border ${isS?'bg-indigo-600 border-indigo-400 text-white shadow-md':'border-slate-800 text-slate-600'}`}>{d}</button>);
+                            })}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              <div className="flex justify-between items-center w-full px-2">
+                <div className="flex items-center gap-2 bg-slate-900 px-4 py-2 rounded-full border border-slate-800 shadow-inner w-full max-w-xs">
+                  <span className="text-xs opacity-50 cursor-pointer hover:opacity-100" onClick={()=>setZoom(Math.max(40, zoom-20))}>➖</span>
+                  <input type="range" min="40" max="240" step="10" value={zoom} onChange={e=>setZoom(Number(e.target.value))} className="w-full accent-indigo-500" />
+                  <span className="text-xs opacity-50 cursor-pointer hover:opacity-100" onClick={()=>setZoom(Math.min(240, zoom+20))}>➕</span>
+                </div>
+                <button onClick={()=>setIsEditMode(!isEditMode)} className={`text-[10px] px-3 py-2 rounded-full border border-slate-800 transition-all ${isEditMode ? 'bg-orange-500/20 text-orange-400 border-orange-500/50' : 'text-slate-500'} whitespace-nowrap ml-4 font-black uppercase tracking-widest`}>
+                   {isEditMode ? '⚠️ FULL' : 'TODAY ONLY'}
+                </button>
+              </div>
+
+              <div className="grid gap-2 sm:gap-3 grid-flow-dense auto-rows-min transition-all duration-300" style={{ gridTemplateColumns: `repeat(auto-fill, minmax(${zoom}px, 1fr))` }}>
+                {canvasTasks.map(task => {
+                  const progress = task.subTasks.length > 0 ? (task.subTasks.filter(st => st.completed).length / task.subTasks.length) * 100 : 0;
+                  const w = task.weight;
+                  const spanStyle = {
+                    gridColumn: `span ${w > 1 ? 2 : 1}`,
+                    gridRow: `span ${w === 3 ? 2 : 1}`,
+                    aspectRatio: w === 2 ? '2/1' : '1/1'
+                  };
+                  const daysSince = (Date.now() - task.lastUpdated) / (1000 * 60 * 60 * 24);
+                  const phaseColor = task.phase === 1 ? 'bg-cyan-600' : task.phase === 2 ? 'bg-indigo-600' : 'bg-amber-500';
+
+                  return (
+                    <div key={task.id} style={spanStyle} onClick={() => setActiveTaskId(task.id)} onContextMenu={(e) => { e.preventDefault(); archiveTaskAction(task); }} className={`relative rounded-2xl overflow-hidden border ${task.type==='volatile'?'border-orange-500/20':'border-slate-800'} bg-slate-900/40 hover:border-indigo-500 hover:scale-[1.02] transition-all cursor-pointer group shadow-xl active:scale-95`}>
+                      <div className={`absolute bottom-0 left-0 w-full transition-all duration-1000 ${phaseColor} opacity-30`} style={{height:`${progress}%`}}/>
+                      {daysSince >= 3 && <div className="absolute inset-0 crack-overlay opacity-40 pointer-events-none" />}
+                      
+                      {/* ✨ UI 改善: 名前を優先、%を脇役化 ✨ */}
+                      <div className={`absolute inset-0 flex flex-col justify-between z-10 pointer-events-none ${zoom < 80 ? 'p-1.5' : 'p-3'}`}>
+                        {/* 上部タグ */}
+                        <div className={`flex justify-between items-start opacity-30 origin-top-left ${zoom < 80 ? 'scale-50' : 'scale-75'}`}>
+                          <span className="text-[8px] font-black uppercase">{task.freq}</span>
+                          {task.type==='persistent' && <span className="text-[8px] font-black uppercase">P{task.phase}</span>}
+                        </div>
+                        
+                        {/* 中央タイトル (主役) */}
+                        <div className="flex-1 flex items-center justify-center py-1">
+                          <h2 className={`font-black leading-tight text-center transition-colors group-hover:text-white ${zoom < 60 ? 'text-[8px]' : zoom < 100 ? 'text-[11px]' : 'text-[13px]'}`}>
+                            {task.title}
+                          </h2>
+                        </div>
+
+                        {/* 下部情報 (脇役) */}
+                        <div className="flex justify-between items-end">
+                           <div className="flex flex-col">
+                             {zoom >= 100 && task.scheduledDate && task.freq === 'once' && <span className="text-[7px] font-mono text-cyan-400/40 font-black">📅{task.scheduledDate.slice(5)}</span>}
+                           </div>
+                           <span className={`font-mono font-black opacity-20 ${zoom < 80 ? 'text-[7px]' : 'text-[9px]'}`}>{Math.round(progress)}%</span>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          {activeTab === 'archive' && (
+            <div className="relative animate-in fade-in duration-500">
+              <div className="flex justify-between items-center mb-6 px-2">
+                <span className="text-[10px] font-black text-slate-500 uppercase tracking-[0.2em]">The Archive of Masterpieces</span>
+                <div className="flex gap-2">
+                  <button onClick={importMemory} className="text-[10px] bg-slate-900 border border-slate-800 px-4 py-2 rounded-full text-indigo-400 font-black hover:bg-slate-800 active:scale-95 transition-transform">注入</button>
+                  <button onClick={exportMemory} className="text-[10px] bg-indigo-600 border border-indigo-500 px-4 py-2 rounded-full text-white font-black hover:bg-indigo-500 active:scale-95 shadow-lg shadow-indigo-500/20 transition-transform">抽出</button>
+                </div>
+              </div>
+              <div className="relative w-full h-[70vh] bg-slate-900/10 rounded-[2.5rem] border-4 border-dashed border-slate-900/50 overflow-hidden shadow-inner backdrop-blur-sm">
+                {archivedTasks.map((task, i) => (
+                  <div key={task.id} onClick={() => setActiveTaskId(task.id)} className={`absolute p-4 rounded-2xl border border-white/5 backdrop-blur-md flex items-center justify-center text-center shadow-2xl cursor-pointer hover:scale-110 hover:rotate-0 transition-all ${showArchiveAnima?'animate-slap':'opacity-0'}`} style={{left:`${task.pos.x}%`, top:`${task.pos.y}%`, width:`${95+task.weight*30}px`, height:`${95+task.weight*30}px`, '--rot':`${task.pos.rot}deg`, backgroundColor:task.phase>=3?'rgba(245,158,11,0.1)':'rgba(79,70,229,0.1)', animationDelay:`${i*0.06}s`, zIndex: i}}>
+                    <div className="flex flex-col items-center">
+                      <h3 className="text-[10px] font-black uppercase text-white/80 drop-shadow-lg leading-tight line-clamp-2">{task.title}</h3>
+                      <span className="text-[8px] font-black text-amber-500 mt-2 tracking-widest">LV.{task.phase}</span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {activeTask && (
+            <div className="fixed inset-0 bg-slate-950/90 backdrop-blur-xl z-50 flex items-center justify-center p-4 transition-all duration-300 animate-in fade-in" onClick={() => {setActiveTaskId(null); setIsEditingTitle(false);}}>
+              <div className="bg-slate-900 border border-slate-800 rounded-[2.5rem] w-full max-w-sm overflow-hidden shadow-2xl animate-in zoom-in duration-200" onClick={e=>e.stopPropagation()}>
+                <div className="p-8 border-b border-slate-800 bg-gradient-to-b from-slate-800/30 to-transparent">
+                  <div className="flex justify-between items-start gap-4">
+                    <div className="flex-1">
+                      {isEditingTitle ? (
+                        <input autoFocus value={activeTask.title} className="bg-slate-950 border border-indigo-500 rounded-lg px-2 py-1 text-xl font-black w-full outline-none" onChange={e => setTasks(tasks.map(t=>t.id===activeTask.id?{...t, title: e.target.value}:t))} onBlur={()=>setIsEditingTitle(false)} onKeyPress={e=>e.key==='Enter' && setIsEditingTitle(false)}/>
+                      ) : (
+                        <h2 className="font-black text-2xl leading-tight cursor-text hover:text-indigo-400 transition-colors" onClick={()=>setIsEditingTitle(true)}>{activeTask.title}</h2>
+                      )}
+                      <p className="text-[10px] text-slate-500 mt-3 font-black uppercase tracking-[0.2em]">{activeTask.isArchived ? 'ARCHIVED' : activeTask.type==='persistent'? `Phase ${activeTask.phase} Strategy` : 'Volatile Task'}</p>
+                    </div>
+                    <button onClick={()=>{setActiveTaskId(null); setIsEditingTitle(false);}} className="text-slate-600 hover:text-white text-3xl leading-none transition-colors">&times;</button>
+                  </div>
+                </div>
+                <div className="p-8 space-y-3 max-h-[50vh] overflow-y-auto no-scrollbar">
+                  {activeTask.subTasks.map(sub => (
+                    <div key={sub.id} className={`flex items-center justify-between p-4 rounded-2xl border transition-all ${activeTask.isArchived ? 'bg-slate-900/50 border-transparent opacity-60' : 'bg-slate-950/50 border-slate-800 group hover:border-indigo-500/40 shadow-sm'}`}>
+                      <div className="flex items-center gap-4 flex-1 cursor-pointer" onClick={()=>{
+                        if(activeTask.isArchived) return;
+                        setTasks(tasks.map(t => t.id === activeTask.id ? {...t, lastUpdated: Date.now(), subTasks: t.subTasks.map(st => st.id === sub.id ? {...st, completed: !st.completed} : st)} : t));
+                      }}>
+                        <div className={`w-6 h-6 rounded-full border-2 flex items-center justify-center transition-all ${sub.completed?'bg-indigo-500 border-indigo-500':'border-slate-700'}`}>
+                          {sub.completed && <span className="text-slate-950 text-[10px] font-black">✓</span>}
+                        </div>
+                        <input onClick={e => e.stopPropagation()} className={`bg-transparent border-none outline-none text-sm font-bold flex-1 ${sub.completed?'line-through text-slate-600':'text-slate-200'}`} value={sub.text} onChange={e => setTasks(tasks.map(t=>t.id===activeTask.id?{...t, subTasks: t.subTasks.map(st=>st.id===sub.id?{...st, text: e.target.value}:st)}:t))} disabled={activeTask.isArchived}/>
+                      </div>
+                      {!activeTask.isArchived && <button onClick={(e)=>{e.stopPropagation(); setTasks(tasks.map(t=>t.id===activeTask.id?{...t, subTasks:t.subTasks.filter(s=>s.id!==sub.id)}:t))}} className="ml-2 text-slate-700 hover:text-red-500 transition-all text-xl">&times;</button>}
+                    </div>
+                  ))}
+                  {!activeTask.isArchived && (
+                    <input type="text" value={newSubText} onChange={e=>setNewSubText(e.target.value)} placeholder="具体的アクション..." className="w-full bg-slate-950/50 border border-slate-800 rounded-2xl px-5 py-4 text-sm focus:ring-1 ring-indigo-500 outline-none mt-2 placeholder:text-slate-700 font-bold" onKeyPress={e=>{if(e.key==='Enter' && newSubText){setTasks(tasks.map(t=>t.id===activeTask.id?{...t, subTasks:[...t.subTasks,{id:Date.now().toString(),text:newSubText,completed:false}]}:t)); setNewSubText('');}}}/>
+                  )}
+                </div>
+                <div className="p-6 bg-slate-950/30 flex justify-between px-10">
+                  <button onClick={()=>{if(confirm('完全に消去しますか？')){setTasks(tasks.filter(t=>t.id!==activeTask.id)); setActiveTaskId(null);}}} className="text-[11px] font-black text-red-900 hover:text-red-500 transition-colors uppercase tracking-widest">Delete</button>
+                  <div className="flex gap-2">
+                    {activeTask.type === 'persistent' && !activeTask.isArchived && activeTask.subTasks.length > 0 && activeTask.subTasks.every(s=>s.completed) && (
+                      <button onClick={()=>levelUpTask(activeTask.id)} className="bg-amber-600 text-white text-[11px] px-5 py-2.5 rounded-xl font-black uppercase hover:bg-amber-500 shadow-lg shadow-amber-900/20 active:scale-95 transition-all">Phase Up</button>
+                    )}
+                    {!activeTask.isArchived && activeTask.subTasks.length > 0 && activeTask.subTasks.every(s=>s.completed) && (
+                      <button onClick={()=>archiveTaskAction(activeTask)} className="bg-white text-slate-950 text-[11px] px-5 py-2.5 rounded-xl font-black hover:bg-slate-200 shadow-lg active:scale-95 transition-all">Archive</button>
+                    )}
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+      );
+    }
+
+    const root = ReactDOM.createRoot(document.getElementById('root'));
+    root.render(<App />);
+  </script>
+</body>
+</html>
