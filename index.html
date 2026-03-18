@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-  <title>Progress Nest v2.2</title>
+  <title>Progress Nest v2.3</title>
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <meta name="apple-mobile-web-app-title" content="Nest">
@@ -19,13 +19,15 @@
     .crack-overlay { background-image: url('https://www.transparenttextures.com/patterns/cracked-glass-panel.png'); pointer-events: none; mix-blend-mode: overlay; }
     .no-scrollbar::-webkit-scrollbar { display: none; }
     * { -webkit-tap-highlight-color: transparent; }
+    /* ピンチ操作をJSで制御するため標準ズームを無効化 */
+    #canvas-root { touch-action: none; }
   </style>
 </head>
 <body class="bg-slate-950 text-slate-100 font-sans min-h-screen p-4 md:p-8 overflow-x-hidden selection:bg-indigo-500/30">
   <div id="root"></div>
 
   <script type="text/babel">
-    const { useState, useEffect } = React;
+    const { useState, useEffect, useRef } = React;
 
     function App() {
       const [tasks, setTasks] = useState([]);
@@ -46,6 +48,53 @@
       const [selectedDates, setSelectedDates] = useState([]);
       const [scheduledDate, setScheduledDate] = useState(new Date().toISOString().split('T')[0]);
       const [showOptions, setShowOptions] = useState(false);
+
+      // ✨ ピンチズーム用のRef ✨
+      const canvasRef = useRef(null);
+      const zoomRef = useRef(zoom);
+      useEffect(() => { zoomRef.current = zoom; }, [zoom]);
+
+      useEffect(() => {
+        const el = canvasRef.current;
+        if (!el) return;
+
+        let initialDist = 0;
+        let initialZoom = 0;
+
+        const handleTouchStart = (e) => {
+          if (e.touches.length === 2) {
+            e.preventDefault();
+            initialDist = Math.hypot(
+              e.touches[0].pageX - e.touches[1].pageX,
+              e.touches[0].pageY - e.touches[1].pageY
+            );
+            initialZoom = zoomRef.current;
+          }
+        };
+
+        const handleTouchMove = (e) => {
+          if (e.touches.length === 2) {
+            e.preventDefault();
+            const dist = Math.hypot(
+              e.touches[0].pageX - e.touches[1].pageX,
+              e.touches[0].pageY - e.touches[1].pageY
+            );
+            // 距離の変化率を計算してズームに反映
+            const factor = dist / initialDist;
+            let newZoom = initialZoom * factor;
+            // 制限範囲内に収める
+            newZoom = Math.max(40, Math.min(240, newZoom));
+            setZoom(newZoom);
+          }
+        };
+
+        el.addEventListener('touchstart', handleTouchStart, { passive: false });
+        el.addEventListener('touchmove', handleTouchMove, { passive: false });
+        return () => {
+          el.removeEventListener('touchstart', handleTouchStart);
+          el.removeEventListener('touchmove', handleTouchMove);
+        };
+      }, []);
 
       useEffect(() => {
         let saved = localStorage.getItem('nest-v2-data');
@@ -231,7 +280,8 @@
                 </button>
               </div>
 
-              <div className="grid gap-2 sm:gap-3 grid-flow-dense auto-rows-min transition-all duration-300" style={{ gridTemplateColumns: `repeat(auto-fill, minmax(${zoom}px, 1fr))` }}>
+              {/* ✨ キャンバス本体（ここにRefを付与） ✨ */}
+              <div id="canvas-root" ref={canvasRef} className="grid gap-2 sm:gap-3 grid-flow-dense auto-rows-min transition-all duration-300" style={{ gridTemplateColumns: `repeat(auto-fill, minmax(${zoom}px, 1fr))` }}>
                 {canvasTasks.map(task => {
                   const progress = task.subTasks.length > 0 ? (task.subTasks.filter(st => st.completed).length / task.subTasks.length) * 100 : 0;
                   const w = task.weight;
@@ -248,22 +298,18 @@
                       <div className={`absolute bottom-0 left-0 w-full transition-all duration-1000 ${phaseColor} opacity-30`} style={{height:`${progress}%`}}/>
                       {daysSince >= 3 && <div className="absolute inset-0 crack-overlay opacity-40 pointer-events-none" />}
                       
-                      {/* ✨ UI 改善: 名前を優先、%を脇役化 ✨ */}
                       <div className={`absolute inset-0 flex flex-col justify-between z-10 pointer-events-none ${zoom < 80 ? 'p-1.5' : 'p-3'}`}>
-                        {/* 上部タグ */}
                         <div className={`flex justify-between items-start opacity-30 origin-top-left ${zoom < 80 ? 'scale-50' : 'scale-75'}`}>
                           <span className="text-[8px] font-black uppercase">{task.freq}</span>
                           {task.type==='persistent' && <span className="text-[8px] font-black uppercase">P{task.phase}</span>}
                         </div>
                         
-                        {/* 中央タイトル (主役) */}
                         <div className="flex-1 flex items-center justify-center py-1">
                           <h2 className={`font-black leading-tight text-center transition-colors group-hover:text-white ${zoom < 60 ? 'text-[8px]' : zoom < 100 ? 'text-[11px]' : 'text-[13px]'}`}>
                             {task.title}
                           </h2>
                         </div>
 
-                        {/* 下部情報 (脇役) */}
                         <div className="flex justify-between items-end">
                            <div className="flex flex-col">
                              {zoom >= 100 && task.scheduledDate && task.freq === 'once' && <span className="text-[7px] font-mono text-cyan-400/40 font-black">📅{task.scheduledDate.slice(5)}</span>}
