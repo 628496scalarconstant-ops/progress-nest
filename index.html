@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-  <title>Progress Nest v2.3</title>
+  <title>Progress Nest v2.5</title>
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <meta name="apple-mobile-web-app-title" content="Nest">
@@ -17,19 +17,34 @@
     @keyframes slap { 0% { transform: scale(5) rotate(30deg); opacity: 0; } 70% { transform: scale(0.9) rotate(-5deg); opacity: 1; } 100% { transform: scale(1) rotate(var(--rot)); opacity: 1; } }
     .animate-slap { animation: slap 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275) forwards; opacity: 0; }
     .crack-overlay { background-image: url('https://www.transparenttextures.com/patterns/cracked-glass-panel.png'); pointer-events: none; mix-blend-mode: overlay; }
+    @keyframes slideIn { from { transform: translateX(-100%); } to { transform: translateX(0); } }
+    .drawer-open { animation: slideIn 0.3s ease-out forwards; }
     .no-scrollbar::-webkit-scrollbar { display: none; }
-    * { -webkit-tap-highlight-color: transparent; }
-    /* ピンチ操作をJSで制御するため標準ズームを無効化 */
-    #canvas-root { touch-action: none; }
+    * { -webkit-tap-highlight-color: transparent; outline: none; }
+    /* ✨ 1本指でのスクロールを許可し、JSでピンチを処理する ✨ */
+    #canvas-root { touch-action: pan-y; }
+    .task-card { transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1); }
   </style>
 </head>
-<body class="bg-slate-950 text-slate-100 font-sans min-h-screen p-4 md:p-8 overflow-x-hidden selection:bg-indigo-500/30">
+<body class="bg-slate-950 text-slate-100 font-sans min-h-screen overflow-x-hidden selection:bg-indigo-500/30">
   <div id="root"></div>
 
   <script type="text/babel">
     const { useState, useEffect, useRef } = React;
 
+    // 言語辞書（多言語対応の土台）
+    const i18n = {
+      ja: { canvas: "キャンバス", archive: "名作", add: "生成", settings: "設定", lang: "言語", themes: "テーマ", howto: "使い方", today: "TODAY ONLY", full: "⚠️ FULL" },
+      en: { canvas: "CANVAS", archive: "MASTERPIECE", add: "Create", settings: "Settings", lang: "Language", themes: "Themes", howto: "How to", today: "TODAY ONLY", full: "⚠️ FULL" }
+    };
+
     function App() {
+      // --- 新規UI用ステート ---
+      const [lang, setLang] = useState('ja');
+      const [isMenuOpen, setIsMenuOpen] = useState(false);
+      const [isInputFocused, setIsInputFocused] = useState(false);
+
+      // --- 既存のコアステート（完全復元） ---
       const [tasks, setTasks] = useState([]);
       const [activeTab, setActiveTab] = useState('canvas');
       const [activeTaskId, setActiveTaskId] = useState(null);
@@ -47,9 +62,10 @@
       const [selectedDays, setSelectedDays] = useState([]);
       const [selectedDates, setSelectedDates] = useState([]);
       const [scheduledDate, setScheduledDate] = useState(new Date().toISOString().split('T')[0]);
-      const [showOptions, setShowOptions] = useState(false);
 
-      // ✨ ピンチズーム用のRef ✨
+      const t = i18n[lang];
+
+      // ✨ ピンチズーム用のRef (1本指スクロール対応版) ✨
       const canvasRef = useRef(null);
       const zoomRef = useRef(zoom);
       useEffect(() => { zoomRef.current = zoom; }, [zoom]);
@@ -57,17 +73,13 @@
       useEffect(() => {
         const el = canvasRef.current;
         if (!el) return;
-
         let initialDist = 0;
         let initialZoom = 0;
 
         const handleTouchStart = (e) => {
           if (e.touches.length === 2) {
             e.preventDefault();
-            initialDist = Math.hypot(
-              e.touches[0].pageX - e.touches[1].pageX,
-              e.touches[0].pageY - e.touches[1].pageY
-            );
+            initialDist = Math.hypot(e.touches[0].pageX - e.touches[1].pageX, e.touches[0].pageY - e.touches[1].pageY);
             initialZoom = zoomRef.current;
           }
         };
@@ -75,27 +87,21 @@
         const handleTouchMove = (e) => {
           if (e.touches.length === 2) {
             e.preventDefault();
-            const dist = Math.hypot(
-              e.touches[0].pageX - e.touches[1].pageX,
-              e.touches[0].pageY - e.touches[1].pageY
-            );
-            // 距離の変化率を計算してズームに反映
+            const dist = Math.hypot(e.touches[0].pageX - e.touches[1].pageX, e.touches[0].pageY - e.touches[1].pageY);
             const factor = dist / initialDist;
             let newZoom = initialZoom * factor;
-            // 制限範囲内に収める
-            newZoom = Math.max(40, Math.min(240, newZoom));
+            // ✨ 最大サイズを 180 に制限（デカすぎ問題の解消）
+            newZoom = Math.max(60, Math.min(180, newZoom));
             setZoom(newZoom);
           }
         };
 
         el.addEventListener('touchstart', handleTouchStart, { passive: false });
         el.addEventListener('touchmove', handleTouchMove, { passive: false });
-        return () => {
-          el.removeEventListener('touchstart', handleTouchStart);
-          el.removeEventListener('touchmove', handleTouchMove);
-        };
+        return () => { el.removeEventListener('touchstart', handleTouchStart); el.removeEventListener('touchmove', handleTouchMove); };
       }, []);
 
+      // ✨ データ読み込み＆移行ロジック（完全復元）
       useEffect(() => {
         let saved = localStorage.getItem('nest-v2-data');
         let savedHistory = localStorage.getItem('nest-v2-history');
@@ -148,10 +154,7 @@
         if (!raw) return;
         try {
           const parsed = JSON.parse(raw);
-          if (Array.isArray(parsed)) {
-            setTasks(parsed);
-            alert("記憶が正常に注入されました。");
-          }
+          if (Array.isArray(parsed)) { setTasks(parsed); alert("記憶が正常に注入されました。"); }
         } catch(e) { alert("無効な記憶フォーマットです。"); }
       };
 
@@ -174,10 +177,11 @@
           pos: { x: Math.random() * 75 + 5, y: Math.random() * 75 + 5, rot: (Math.random() - 0.5) * 30 }
         }]);
         setTitle('');
-        setShowOptions(false);
+        setIsInputFocused(false);
       };
 
       const archiveTaskAction = (task) => {
+        if (task.type === 'persistent' && !confirm('この「ファイル」を完了として閉じますか？')) return;
         fireConfetti();
         if (navigator.vibrate) navigator.vibrate(50);
         const updatedSubTasks = task.subTasks.length === 0 ? [{ id: 'auto', text: '完了', completed: true }] : task.subTasks.map(st => ({...st, completed: true}));
@@ -207,147 +211,191 @@
       const activeTask = tasks.find(t => t.id === activeTaskId);
 
       return (
-        <div className="max-w-7xl mx-auto pb-24 px-2 sm:px-4">
-          <header className="mb-6 flex justify-between items-center border-b border-slate-800 pb-4 flex-col md:flex-row gap-4">
-            <h1 className="text-3xl font-black text-transparent bg-clip-text bg-gradient-to-r from-cyan-400 via-indigo-500 to-amber-500 tracking-tighter">Progress Nest</h1>
-            <div className="flex bg-slate-900 rounded-xl p-1 border border-slate-800 shadow-xl">
-              <button onClick={() => setActiveTab('canvas')} className={`px-6 py-2 rounded-lg text-sm font-bold transition-all ${activeTab === 'canvas' ? 'bg-slate-700 text-white shadow-lg' : 'text-slate-500'}`}>🎨 CANVAS</button>
-              <button onClick={() => { setActiveTab('archive'); setShowArchiveAnima(false); setTimeout(()=>setShowArchiveAnima(true),50); }} className={`px-6 py-2 rounded-lg text-sm font-bold transition-all ${activeTab === 'archive' ? 'bg-slate-700 text-white shadow-lg' : 'text-slate-500'}`}>🏛️ MASTERPIECE</button>
+        <div className="min-h-screen flex flex-col">
+          {/* --- ハンバーガーメニュー (Drawer) --- */}
+          {isMenuOpen && (
+            <div className="fixed inset-0 z-[100] bg-slate-950/80 backdrop-blur-sm" onClick={() => setIsMenuOpen(false)}>
+              <div className="w-72 h-full bg-slate-900 border-r border-slate-800 p-6 drawer-open" onClick={e => e.stopPropagation()}>
+                <h2 className="text-xl font-black mb-8 text-indigo-400">Menu</h2>
+                <nav className="space-y-6">
+                  <div className="space-y-2">
+                    <p className="text-[10px] font-black text-slate-500 uppercase tracking-widest">{t.lang}</p>
+                    <div className="flex gap-2">
+                      <button onClick={()=>setLang('ja')} className={`flex-1 py-2 rounded-lg border ${lang==='ja'?'border-indigo-500 text-indigo-400':'border-slate-800 text-slate-600'}`}>JP</button>
+                      <button onClick={()=>setLang('en')} className={`flex-1 py-2 rounded-lg border ${lang==='en'?'border-indigo-500 text-indigo-400':'border-slate-800 text-slate-600'}`}>EN</button>
+                    </div>
+                  </div>
+                  <button className="w-full text-left py-3 border-b border-slate-800 text-sm font-bold text-slate-300 hover:text-white">🚀 {t.howto}</button>
+                  <button className="w-full text-left py-3 border-b border-slate-800 text-sm font-bold text-slate-300 hover:text-white flex justify-between items-center">
+                    <span>🎨 {t.themes}</span>
+                    <span className="text-[10px] bg-indigo-900 text-indigo-300 px-2 py-0.5 rounded-full">Premium 🔒</span>
+                  </button>
+                </nav>
+              </div>
+            </div>
+          )}
+
+          {/* --- Header --- */}
+          <header className="p-4 flex flex-col md:flex-row items-center justify-between border-b border-slate-900 sticky top-0 bg-slate-950/80 backdrop-blur-md z-40 gap-4">
+            <div className="flex items-center w-full md:w-auto">
+              <button onClick={() => setIsMenuOpen(true)} className="p-2 hover:bg-slate-900 rounded-xl transition-colors mr-2">
+                <div className="w-6 h-0.5 bg-slate-300 mb-1.5"></div>
+                <div className="w-6 h-0.5 bg-slate-300 mb-1.5"></div>
+                <div className="w-6 h-0.5 bg-slate-300"></div>
+              </button>
+              <h1 className="text-xl font-black tracking-tighter bg-clip-text text-transparent bg-gradient-to-r from-cyan-400 via-indigo-500 to-amber-500 flex-1">Progress Nest</h1>
+            </div>
+            <div className="flex bg-slate-900 rounded-full p-1 border border-slate-800 w-full md:w-auto justify-center">
+               <button onClick={()=>setActiveTab('canvas')} className={`px-6 py-1.5 rounded-full text-xs font-black transition-all ${activeTab==='canvas'?'bg-slate-700 text-white shadow-lg':'text-slate-500'}`}>{t.canvas}</button>
+               <button onClick={() => { setActiveTab('archive'); setShowArchiveAnima(false); setTimeout(()=>setShowArchiveAnima(true),50); }} className={`px-6 py-1.5 rounded-full text-xs font-black transition-all ${activeTab==='archive'?'bg-slate-700 text-white shadow-lg':'text-slate-500'}`}>{t.archive}</button>
             </div>
           </header>
 
-          {activeTab === 'canvas' && (
-            <div className="space-y-6">
-              <div className="bg-slate-900/80 p-4 rounded-3xl border border-slate-800 max-w-3xl mx-auto shadow-2xl backdrop-blur-md">
-                <div className="flex flex-col sm:flex-row gap-2">
-                  <input type="text" value={title} onChange={e=>setTitle(e.target.value)} placeholder="新しいタスクを生成..." className="flex-1 bg-slate-950 border border-slate-800 rounded-2xl px-5 py-4 font-bold text-lg outline-none focus:ring-2 ring-indigo-500 min-w-0"/>
-                  <div className="flex gap-2 w-full sm:w-auto">
-                    <button onClick={() => setShowOptions(!showOptions)} className={`flex-1 sm:flex-none px-5 py-4 rounded-2xl border transition-all ${showOptions ? 'bg-indigo-600 border-indigo-500 text-white' : 'bg-slate-800 border-slate-700 text-slate-400'}`}>⚙️</button>
-                    <button onClick={() => addParentTask()} className="flex-1 sm:flex-none bg-indigo-600 px-8 py-4 rounded-2xl font-black text-sm text-white shadow-lg active:scale-95 transition-all">追加</button>
+          <main className="flex-1 p-4 max-w-7xl mx-auto w-full space-y-6">
+            {activeTab === 'canvas' && (
+              <>
+                {/* --- スマート入力欄 (自動展開 & スケジュール完全復元) --- */}
+                <div className={`bg-slate-900/50 rounded-[2rem] border transition-all duration-300 overflow-hidden max-w-3xl mx-auto ${isInputFocused ? 'border-indigo-500/50 shadow-2xl backdrop-blur-md bg-slate-900/90' : 'border-slate-900 shadow-lg'}`}>
+                  <div className="flex items-center px-4 sm:px-6 py-4">
+                    <input 
+                      type="text" 
+                      value={title} 
+                      onChange={e=>setTitle(e.target.value)} 
+                      onFocus={()=>setIsInputFocused(true)}
+                      placeholder="新しいタスクを生成..." 
+                      className="bg-transparent flex-1 text-base sm:text-lg font-bold outline-none placeholder:text-slate-700 w-full"
+                      onKeyPress={e => e.key === 'Enter' && addParentTask()}
+                    />
+                    <button onClick={() => addParentTask()} className="ml-2 sm:ml-4 bg-indigo-600 text-white px-4 sm:px-6 py-2 rounded-2xl font-black text-xs hover:bg-indigo-500 active:scale-95 transition-all whitespace-nowrap">
+                      {t.add}
+                    </button>
                   </div>
-                </div>
-                {history.length > 0 && !showOptions && (
-                  <div className="flex flex-wrap gap-2 mt-4">
-                    {history.map((h, i) => (<button key={i} onClick={() => addParentTask(h)} className="text-[10px] bg-slate-800/50 text-slate-400 px-3 py-1.5 rounded-full border border-slate-800 hover:text-white transition-all">+ {h}</button>))}
-                  </div>
-                )}
-                {showOptions && (
-                  <div className="mt-4 pt-4 border-t border-slate-800 animate-in slide-in-from-top-2">
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                      <div className="space-y-3">
-                        <label className="text-[10px] text-slate-500 font-black uppercase tracking-widest">Type & Size</label>
-                        <div className="flex gap-1 bg-slate-950 p-1 rounded-xl border border-slate-800">
-                          <button onClick={()=>setType('persistent')} className={`flex-1 py-2 text-[11px] font-black rounded-lg ${type==='persistent'?'bg-slate-800 text-cyan-400 shadow-inner':'text-slate-600'}`}>永続 (成長)</button>
-                          <button onClick={()=>setType('volatile')} className={`flex-1 py-2 text-[11px] font-black rounded-lg ${type==='volatile'?'bg-slate-800 text-orange-400 shadow-inner':'text-slate-600'}`}>揮発 (維持)</button>
+                  
+                  {isInputFocused && (
+                    <div className="px-6 pb-6 space-y-4 animate-in slide-in-from-top-2 border-t border-slate-800/50 mt-2 pt-4">
+                      {history.length > 0 && (
+                        <div className="flex flex-wrap gap-2 mb-4">
+                          {history.map((h, i) => (<button key={i} onClick={() => addParentTask(h)} className="text-[10px] bg-slate-800/50 text-slate-400 px-3 py-1.5 rounded-full border border-slate-800 hover:text-white transition-all">+ {h}</button>))}
                         </div>
-                        <div className="flex gap-1 bg-slate-950 p-1 rounded-xl border border-slate-800">
-                          {['1','2','3'].map(w => (<button key={w} onClick={()=>setWeight(w)} className={`flex-1 py-2 text-[11px] font-black rounded-lg ${weight===w?'bg-slate-800 text-white shadow-inner':'text-slate-600'}`}>{w==='1'?'小':w==='2'?'中':'大'}</button>))}
+                      )}
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                        <div className="space-y-3">
+                          <label className="text-[10px] text-slate-500 font-black uppercase tracking-widest">Type & Size</label>
+                          <div className="flex gap-1 bg-slate-950 p-1 rounded-xl border border-slate-800">
+                            <button onClick={()=>setType('persistent')} className={`flex-1 py-2 text-[11px] font-black rounded-lg ${type==='persistent'?'bg-slate-800 text-cyan-400 shadow-inner':'text-slate-600'}`}>ファイル (File)</button>
+                            <button onClick={()=>setType('volatile')} className={`flex-1 py-2 text-[11px] font-black rounded-lg ${type==='volatile'?'bg-slate-800 text-orange-400 shadow-inner':'text-slate-600'}`}>タスク (Task)</button>
+                          </div>
+                          <div className="flex gap-1 bg-slate-950 p-1 rounded-xl border border-slate-800">
+                            {['1','2','3'].map(w => (<button key={w} onClick={()=>setWeight(w)} className={`flex-1 py-2 text-[11px] font-black rounded-lg ${weight===w?'bg-slate-800 text-white shadow-inner':'text-slate-600'}`}>{w==='1'?'小':w==='2'?'中':'大'}</button>))}
+                          </div>
+                        </div>
+                        <div className="space-y-3">
+                          <label className="text-[10px] text-slate-500 font-black uppercase tracking-widest">Schedule</label>
+                          <div className="flex gap-1 bg-slate-950 p-1 rounded-xl border border-slate-800">
+                            {['once','daily','weekly','monthly'].map(f => (<button key={f} onClick={()=>handleFreqChange(f)} className={`flex-1 py-2 text-[10px] sm:text-[11px] font-black rounded-lg ${freq===f?'bg-slate-800 text-white shadow-inner':'text-slate-600'}`}>{f.toUpperCase()}</button>))}
+                          </div>
+                          {freq === 'once' && <input type="date" value={scheduledDate} onChange={e=>setScheduledDate(e.target.value)} className="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-2.5 text-xs text-indigo-400 font-bold outline-none" />}
+                          {freq === 'weekly' && (
+                            <div className="flex justify-between mt-2">
+                              {['日','月','火','水','木','金','土'].map((d,i) => (<button key={i} onClick={()=>setSelectedDays(prev=>prev.includes(i)?prev.filter(x=>x!==i):[...prev,i])} className={`w-8 h-8 rounded-full text-[10px] font-black border ${selectedDays.includes(i)?'bg-indigo-600 border-indigo-400 text-white':'border-slate-800 text-slate-500'}`}>{d}</button>))}
+                            </div>
+                          )}
+                          {freq === 'monthly' && (
+                            <div className="grid grid-cols-7 gap-1 mt-2">
+                              {[...Array(31)].map((_, i) => { 
+                                const d=i+1; const isS = selectedDates.includes(d); 
+                                return (<button key={d} onClick={()=>setSelectedDates(p=>isS?p.filter(x=>x!==d):[...p,d])} className={`text-[9px] py-1.5 rounded-lg border ${isS?'bg-indigo-600 border-indigo-400 text-white shadow-md':'border-slate-800 text-slate-600'}`}>{d}</button>);
+                              })}
+                            </div>
+                          )}
                         </div>
                       </div>
-                      <div className="space-y-3">
-                        <label className="text-[10px] text-slate-500 font-black uppercase tracking-widest">Schedule</label>
-                        <div className="flex gap-1 bg-slate-950 p-1 rounded-xl border border-slate-800">
-                          {['once','daily','weekly','monthly'].map(f => (<button key={f} onClick={()=>handleFreqChange(f)} className={`flex-1 py-2 text-[11px] font-black rounded-lg ${freq===f?'bg-slate-800 text-white shadow-inner':'text-slate-600'}`}>{f.toUpperCase()}</button>))}
-                        </div>
-                        {freq === 'once' && <input type="date" value={scheduledDate} onChange={e=>setScheduledDate(e.target.value)} className="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-2.5 text-xs text-indigo-400 font-bold" />}
-                        {freq === 'weekly' && (
-                          <div className="flex justify-between mt-2">
-                            {['日','月','火','水','木','金','土'].map((d,i) => (<button key={i} onClick={()=>setSelectedDays(prev=>prev.includes(i)?prev.filter(x=>x!==i):[...prev,i])} className={`w-8 h-8 rounded-full text-[10px] font-black border ${selectedDays.includes(i)?'bg-indigo-600 border-indigo-400 text-white':'border-slate-800 text-slate-500'}`}>{d}</button>))}
-                          </div>
-                        )}
-                        {freq === 'monthly' && (
-                          <div className="grid grid-cols-7 gap-1 mt-2">
-                            {[...Array(31)].map((_, i) => { 
-                              const d=i+1; const isS = selectedDates.includes(d); 
-                              return (<button key={d} onClick={()=>setSelectedDates(p=>isS?p.filter(x=>x!==d):[...p,d])} className={`text-[9px] py-1.5 rounded-lg border ${isS?'bg-indigo-600 border-indigo-400 text-white shadow-md':'border-slate-800 text-slate-600'}`}>{d}</button>);
-                            })}
-                          </div>
-                        )}
+                      <div className="flex justify-end pt-2">
+                         <button onClick={()=>setIsInputFocused(false)} className="text-[10px] text-slate-500 hover:text-white uppercase font-black">Close</button>
                       </div>
                     </div>
-                  </div>
-                )}
-              </div>
-
-              <div className="flex justify-between items-center w-full px-2">
-                <div className="flex items-center gap-2 bg-slate-900 px-4 py-2 rounded-full border border-slate-800 shadow-inner w-full max-w-xs">
-                  <span className="text-xs opacity-50 cursor-pointer hover:opacity-100" onClick={()=>setZoom(Math.max(40, zoom-20))}>➖</span>
-                  <input type="range" min="40" max="240" step="10" value={zoom} onChange={e=>setZoom(Number(e.target.value))} className="w-full accent-indigo-500" />
-                  <span className="text-xs opacity-50 cursor-pointer hover:opacity-100" onClick={()=>setZoom(Math.min(240, zoom+20))}>➕</span>
+                  )}
                 </div>
-                <button onClick={()=>setIsEditMode(!isEditMode)} className={`text-[10px] px-3 py-2 rounded-full border border-slate-800 transition-all ${isEditMode ? 'bg-orange-500/20 text-orange-400 border-orange-500/50' : 'text-slate-500'} whitespace-nowrap ml-4 font-black uppercase tracking-widest`}>
-                   {isEditMode ? '⚠️ FULL' : 'TODAY ONLY'}
-                </button>
-              </div>
 
-              {/* ✨ キャンバス本体（ここにRefを付与） ✨ */}
-              <div id="canvas-root" ref={canvasRef} className="grid gap-2 sm:gap-3 grid-flow-dense auto-rows-min transition-all duration-300" style={{ gridTemplateColumns: `repeat(auto-fill, minmax(${zoom}px, 1fr))` }}>
-                {canvasTasks.map(task => {
-                  const progress = task.subTasks.length > 0 ? (task.subTasks.filter(st => st.completed).length / task.subTasks.length) * 100 : 0;
-                  const w = task.weight;
-                  const spanStyle = {
-                    gridColumn: `span ${w > 1 ? 2 : 1}`,
-                    gridRow: `span ${w === 3 ? 2 : 1}`,
-                    aspectRatio: w === 2 ? '2/1' : '1/1'
-                  };
-                  const daysSince = (Date.now() - task.lastUpdated) / (1000 * 60 * 60 * 24);
-                  const phaseColor = task.phase === 1 ? 'bg-cyan-600' : task.phase === 2 ? 'bg-indigo-600' : 'bg-amber-500';
+                <div className="flex justify-between items-center w-full px-2 max-w-3xl mx-auto">
+                  <span className="text-xs opacity-50">Zoom</span>
+                  <button onClick={()=>setIsEditMode(!isEditMode)} className={`text-[10px] px-3 py-1.5 rounded-full border border-slate-800 transition-all ${isEditMode ? 'bg-orange-500/20 text-orange-400 border-orange-500/50' : 'text-slate-500'} font-black uppercase tracking-widest`}>
+                     {isEditMode ? t.full : t.today}
+                  </button>
+                </div>
 
-                  return (
-                    <div key={task.id} style={spanStyle} onClick={() => setActiveTaskId(task.id)} onContextMenu={(e) => { e.preventDefault(); archiveTaskAction(task); }} className={`relative rounded-2xl overflow-hidden border ${task.type==='volatile'?'border-orange-500/20':'border-slate-800'} bg-slate-900/40 hover:border-indigo-500 hover:scale-[1.02] transition-all cursor-pointer group shadow-xl active:scale-95`}>
-                      <div className={`absolute bottom-0 left-0 w-full transition-all duration-1000 ${phaseColor} opacity-30`} style={{height:`${progress}%`}}/>
-                      {daysSince >= 3 && <div className="absolute inset-0 crack-overlay opacity-40 pointer-events-none" />}
-                      
-                      <div className={`absolute inset-0 flex flex-col justify-between z-10 pointer-events-none ${zoom < 80 ? 'p-1.5' : 'p-3'}`}>
-                        <div className={`flex justify-between items-start opacity-30 origin-top-left ${zoom < 80 ? 'scale-50' : 'scale-75'}`}>
-                          <span className="text-[8px] font-black uppercase">{task.freq}</span>
-                          {task.type==='persistent' && <span className="text-[8px] font-black uppercase">P{task.phase}</span>}
-                        </div>
+                {/* --- キャンバス本体 (同居モデル ＋ ヒビ割れ演出復元) --- */}
+                <div id="canvas-root" ref={canvasRef} className="grid gap-2 sm:gap-3 grid-flow-dense auto-rows-min pb-24" style={{ gridTemplateColumns: `repeat(auto-fill, minmax(${zoom}px, 1fr))` }}>
+                  {canvasTasks.map(task => {
+                    const progress = task.subTasks.length > 0 ? (task.subTasks.filter(st => st.completed).length / task.subTasks.length) * 100 : 0;
+                    const isFile = task.type === 'persistent';
+                    const w = task.weight;
+                    const daysSince = (Date.now() - task.lastUpdated) / (1000 * 60 * 60 * 24);
+                    
+                    return (
+                      <div 
+                        key={task.id} 
+                        onClick={()=>setActiveTaskId(task.id)}
+                        onContextMenu={(e)=>{e.preventDefault(); archiveTaskAction(task);}}
+                        style={{ gridColumn: `span ${w > 1 ? 2 : 1}`, gridRow: `span ${w === 3 ? 2 : 1}`, aspectRatio: w === 2 ? '2/1' : '1/1' }}
+                        className={`task-card relative rounded-2xl overflow-hidden border ${isFile ? 'border-cyan-500/20 bg-cyan-950/10' : 'border-slate-800 bg-slate-900/40'} hover:border-indigo-500 cursor-pointer shadow-lg group`}
+                      >
+                        <div className={`absolute bottom-0 left-0 w-full ${isFile?'bg-cyan-500/20':'bg-indigo-500/20'} transition-all duration-700`} style={{height: `${progress}%`}} />
+                        {daysSince >= 3 && <div className="absolute inset-0 crack-overlay opacity-40 pointer-events-none" />}
                         
-                        <div className="flex-1 flex items-center justify-center py-1">
-                          <h2 className={`font-black leading-tight text-center transition-colors group-hover:text-white ${zoom < 60 ? 'text-[8px]' : zoom < 100 ? 'text-[11px]' : 'text-[13px]'}`}>
-                            {task.title}
-                          </h2>
-                        </div>
+                        <div className={`absolute inset-0 flex flex-col justify-between z-10 pointer-events-none ${zoom < 80 ? 'p-1.5' : 'p-3'}`}>
+                          <div className={`flex justify-between items-start opacity-50 origin-top-left ${zoom < 80 ? 'scale-50' : 'scale-75'}`}>
+                            <span className={`text-[8px] font-black uppercase ${isFile?'text-cyan-400':'text-slate-400'}`}>{isFile?'FILE':'TASK'}・{task.freq}</span>
+                            {isFile && <span className="text-[8px] font-black text-cyan-500">P{task.phase}</span>}
+                          </div>
+                          
+                          <div className="flex-1 flex items-center justify-center py-1">
+                            <h2 className={`font-black leading-tight text-center break-all transition-colors group-hover:text-white ${zoom < 60 ? 'text-[8px]' : zoom < 100 ? 'text-[11px]' : 'text-[13px]'}`}>
+                              {task.title}
+                            </h2>
+                          </div>
 
-                        <div className="flex justify-between items-end">
-                           <div className="flex flex-col">
-                             {zoom >= 100 && task.scheduledDate && task.freq === 'once' && <span className="text-[7px] font-mono text-cyan-400/40 font-black">📅{task.scheduledDate.slice(5)}</span>}
-                           </div>
-                           <span className={`font-mono font-black opacity-20 ${zoom < 80 ? 'text-[7px]' : 'text-[9px]'}`}>{Math.round(progress)}%</span>
+                          <div className="flex justify-between items-end">
+                             <div className="flex flex-col">
+                               {zoom >= 100 && task.scheduledDate && task.freq === 'once' && <span className="text-[7px] font-mono text-cyan-400/40 font-black">📅{task.scheduledDate.slice(5)}</span>}
+                             </div>
+                             <span className={`font-mono font-black opacity-30 ${zoom < 80 ? 'text-[7px]' : 'text-[9px]'}`}>{Math.round(progress)}%</span>
+                          </div>
                         </div>
                       </div>
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-          )}
+                    );
+                  })}
+                </div>
+              </>
+            )}
 
-          {activeTab === 'archive' && (
-            <div className="relative animate-in fade-in duration-500">
-              <div className="flex justify-between items-center mb-6 px-2">
-                <span className="text-[10px] font-black text-slate-500 uppercase tracking-[0.2em]">The Archive of Masterpieces</span>
-                <div className="flex gap-2">
-                  <button onClick={importMemory} className="text-[10px] bg-slate-900 border border-slate-800 px-4 py-2 rounded-full text-indigo-400 font-black hover:bg-slate-800 active:scale-95 transition-transform">注入</button>
-                  <button onClick={exportMemory} className="text-[10px] bg-indigo-600 border border-indigo-500 px-4 py-2 rounded-full text-white font-black hover:bg-indigo-500 active:scale-95 shadow-lg shadow-indigo-500/20 transition-transform">抽出</button>
+            {/* --- アーカイブ (アニメーション＆抽出・注入 復元) --- */}
+            {activeTab === 'archive' && (
+              <div className="relative animate-in fade-in duration-500">
+                <div className="flex justify-between items-center mb-6 px-2">
+                  <span className="text-[10px] font-black text-slate-500 uppercase tracking-[0.2em]">The Archive of Masterpieces</span>
+                  <div className="flex gap-2">
+                    <button onClick={importMemory} className="text-[10px] bg-slate-900 border border-slate-800 px-4 py-2 rounded-full text-indigo-400 font-black hover:bg-slate-800 active:scale-95 transition-transform">注入</button>
+                    <button onClick={exportMemory} className="text-[10px] bg-indigo-600 border border-indigo-500 px-4 py-2 rounded-full text-white font-black hover:bg-indigo-500 active:scale-95 shadow-lg shadow-indigo-500/20 transition-transform">抽出</button>
+                  </div>
+                </div>
+                <div className="relative w-full h-[70vh] bg-slate-900/10 rounded-[2.5rem] border-4 border-dashed border-slate-900/50 overflow-hidden shadow-inner backdrop-blur-sm">
+                  {archivedTasks.map((task, i) => (
+                    <div key={task.id} onClick={() => setActiveTaskId(task.id)} className={`absolute p-4 rounded-2xl border border-white/5 backdrop-blur-md flex items-center justify-center text-center shadow-2xl cursor-pointer hover:scale-110 hover:rotate-0 transition-all ${showArchiveAnima?'animate-slap':'opacity-0'}`} style={{left:`${task.pos.x}%`, top:`${task.pos.y}%`, width:`${95+task.weight*30}px`, height:`${95+task.weight*30}px`, '--rot':`${task.pos.rot}deg`, backgroundColor:task.phase>=3?'rgba(245,158,11,0.1)':'rgba(79,70,229,0.1)', animationDelay:`${i*0.06}s`, zIndex: i}}>
+                      <div className="flex flex-col items-center">
+                        <h3 className="text-[10px] font-black uppercase text-white/80 drop-shadow-lg leading-tight line-clamp-2">{task.title}</h3>
+                        <span className="text-[8px] font-black text-amber-500 mt-2 tracking-widest">LV.{task.phase}</span>
+                      </div>
+                    </div>
+                  ))}
                 </div>
               </div>
-              <div className="relative w-full h-[70vh] bg-slate-900/10 rounded-[2.5rem] border-4 border-dashed border-slate-900/50 overflow-hidden shadow-inner backdrop-blur-sm">
-                {archivedTasks.map((task, i) => (
-                  <div key={task.id} onClick={() => setActiveTaskId(task.id)} className={`absolute p-4 rounded-2xl border border-white/5 backdrop-blur-md flex items-center justify-center text-center shadow-2xl cursor-pointer hover:scale-110 hover:rotate-0 transition-all ${showArchiveAnima?'animate-slap':'opacity-0'}`} style={{left:`${task.pos.x}%`, top:`${task.pos.y}%`, width:`${95+task.weight*30}px`, height:`${95+task.weight*30}px`, '--rot':`${task.pos.rot}deg`, backgroundColor:task.phase>=3?'rgba(245,158,11,0.1)':'rgba(79,70,229,0.1)', animationDelay:`${i*0.06}s`, zIndex: i}}>
-                    <div className="flex flex-col items-center">
-                      <h3 className="text-[10px] font-black uppercase text-white/80 drop-shadow-lg leading-tight line-clamp-2">{task.title}</h3>
-                      <span className="text-[8px] font-black text-amber-500 mt-2 tracking-widest">LV.{task.phase}</span>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
+            )}
+          </main>
 
+          {/* --- 詳細モーダル (タイトル編集＆Phase Up 復元) --- */}
           {activeTask && (
-            <div className="fixed inset-0 bg-slate-950/90 backdrop-blur-xl z-50 flex items-center justify-center p-4 transition-all duration-300 animate-in fade-in" onClick={() => {setActiveTaskId(null); setIsEditingTitle(false);}}>
+            <div className="fixed inset-0 bg-slate-950/90 backdrop-blur-xl z-[150] flex items-center justify-center p-4 transition-all duration-300 animate-in fade-in" onClick={() => {setActiveTaskId(null); setIsEditingTitle(false);}}>
               <div className="bg-slate-900 border border-slate-800 rounded-[2.5rem] w-full max-w-sm overflow-hidden shadow-2xl animate-in zoom-in duration-200" onClick={e=>e.stopPropagation()}>
                 <div className="p-8 border-b border-slate-800 bg-gradient-to-b from-slate-800/30 to-transparent">
                   <div className="flex justify-between items-start gap-4">
@@ -357,7 +405,7 @@
                       ) : (
                         <h2 className="font-black text-2xl leading-tight cursor-text hover:text-indigo-400 transition-colors" onClick={()=>setIsEditingTitle(true)}>{activeTask.title}</h2>
                       )}
-                      <p className="text-[10px] text-slate-500 mt-3 font-black uppercase tracking-[0.2em]">{activeTask.isArchived ? 'ARCHIVED' : activeTask.type==='persistent'? `Phase ${activeTask.phase} Strategy` : 'Volatile Task'}</p>
+                      <p className="text-[10px] text-slate-500 mt-3 font-black uppercase tracking-[0.2em]">{activeTask.isArchived ? 'ARCHIVED' : activeTask.type==='persistent'? `Phase ${activeTask.phase} File` : 'Volatile Task'}</p>
                     </div>
                     <button onClick={()=>{setActiveTaskId(null); setIsEditingTitle(false);}} className="text-slate-600 hover:text-white text-3xl leading-none transition-colors">&times;</button>
                   </div>
