@@ -71,12 +71,15 @@
       const [selectedDays, setSelectedDays] = useState([]);
       const [selectedDates, setSelectedDates] = useState([]);
       
-      // ✨ 修正: 単一の scheduledDate から startDate と dueDate へ変更
       const [startDate, setStartDate] = useState('');
       const [dueDate, setDueDate] = useState('');
       
       // Nヶ月/N週間の「N」を保持するステート（初期値は1）
       const [intervalVal, setIntervalVal] = useState('1');
+
+      // ✨ 追加: Task in Task（孫階層）の表示用ステート
+      const [activeSubTaskId, setActiveSubTaskId] = useState(null);
+      const [newChecklistText, setNewChecklistText] = useState('');
 
       const t = i18n[lang];
 
@@ -136,7 +139,7 @@
           const parsed = JSON.parse(saved);
           const today = new Date().toLocaleDateString();
           if (lastLogin && lastLogin !== today) {
-             setTasks(parsed.map(t => t.type === 'volatile' ? {...t, subTasks: t.subTasks.map(st => ({...st, completed: false}))} : t));
+             setTasks(parsed.map(t => t.type === 'volatile' ? {...t, subTasks: t.subTasks.map(st => ({...st, completed: false, checklists: (st.checklists||[]).map(c=>({...c, completed:false}))}))} : t));
           } else { setTasks(parsed); }
           localStorage.setItem('nest-v2-login', today);
         }
@@ -189,7 +192,7 @@
           id: Date.now().toString(),
           title: finalTitle, type, freq, weight: parseInt(weight),
           selectedDays: finalDays, selectedDates: finalDates, 
-          startDate, dueDate, // ✨ 修正: startDate と dueDate を保存
+          startDate, dueDate, 
           subTasks: [], isArchived: false, archiveStatus: 'pending', phase: 1, lastUpdated: Date.now(),
           interval: (freq === 'monthly' || freq === 'weekly') ? (parseInt(intervalVal) || 1) : 1, 
           pos: { x: Math.random() * 75 + 5, y: Math.random() * 75 + 5, rot: (Math.random() - 0.5) * 30 }
@@ -202,23 +205,51 @@
         if (task.type === 'persistent' && !confirm('この「ファイル」を完了として閉じますか？')) return;
         fireConfetti();
         if (navigator.vibrate) navigator.vibrate(50);
-        const updatedSubTasks = task.subTasks.length === 0 ? [{ id: 'auto', text: '完了', completed: true }] : task.subTasks.map(st => ({...st, completed: true}));
+        const updatedSubTasks = task.subTasks.length === 0 ? [{ id: 'auto', text: '完了', completed: true }] : task.subTasks.map(st => ({...st, completed: true, checklists: (st.checklists||[]).map(c=>({...c, completed:true}))}));
         setTasks(prev => prev.map(t => t.id === task.id ? {...t, subTasks: updatedSubTasks, isArchived: true, archiveStatus: 'completed', archivedAt: new Date().toISOString()} : t));
         setActiveTaskId(null);
+        setActiveSubTaskId(null);
       };
 
-      // ✨ 新規実装: Fail（諦める）機能
       const failTaskAction = (task) => {
         if (!confirm('このタスクを「Fail（諦める）」として履歴に流しますか？')) return;
         if (navigator.vibrate) navigator.vibrate(50);
         setTasks(prev => prev.map(t => t.id === task.id ? {...t, isArchived: true, archiveStatus: 'failed', archivedAt: new Date().toISOString()} : t));
         setActiveTaskId(null);
+        setActiveSubTaskId(null);
       };
 
       const levelUpTask = (pId) => {
         fireConfetti();
-        setTasks(tasks.map(t => t.id === pId ? { ...t, phase: t.phase + 1, subTasks: t.subTasks.map(st => ({...st, completed: false})), lastUpdated: Date.now() } : t));
+        setTasks(tasks.map(t => t.id === pId ? { ...t, phase: t.phase + 1, subTasks: t.subTasks.map(st => ({...st, completed: false, checklists: (st.checklists||[]).map(c=>({...c, completed:false}))})), lastUpdated: Date.now() } : t));
         setActiveTaskId(null);
+        setActiveSubTaskId(null);
+      };
+
+      // ✨ 追加: 全てのチェックが終わっているか判定する関数
+      const checkAllCompleted = (task) => {
+        if (!task.subTasks || task.subTasks.length === 0) return false;
+        return task.subTasks.every(st => {
+          if (st.checklists && st.checklists.length > 0) return st.checklists.every(c => c.completed);
+          return st.completed;
+        });
+      };
+
+      // ✨ 追加: ゲージのパーセントを計算する関数（孫タスク対応）
+      const calculateProgress = (task) => {
+        if (!task.subTasks || task.subTasks.length === 0) return 0;
+        let total = 0;
+        let completed = 0;
+        task.subTasks.forEach(st => {
+          if (st.checklists && st.checklists.length > 0) {
+            total += st.checklists.length;
+            completed += st.checklists.filter(c => c.completed).length;
+          } else {
+            total += 1;
+            if (st.completed) completed += 1;
+          }
+        });
+        return total === 0 ? 0 : (completed / total) * 100;
       };
 
       const isVisibleToday = (task) => {
@@ -226,7 +257,6 @@
         const now = new Date();
         const todayStr = now.toISOString().split('T')[0];
         
-        // ✨ 修正: 開始日(startDate)が設定されていなければ常に表示、設定されていれば今日以降に表示
         if (task.freq === 'once') return !task.startDate || todayStr >= task.startDate;
         
         if (task.freq === 'daily') return true;
@@ -355,7 +385,6 @@
                             <button onClick={()=>setType('volatile')} className={`flex-1 py-2 text-[11px] font-black rounded-lg ${type==='volatile'?'bg-slate-800 text-orange-400 shadow-inner':'text-slate-600'}`}>{lang === 'ja' ? 'タスク (Task)' : 'TASK'}</button>
                           </div>
                           <div className="flex gap-1 bg-slate-950 p-1 rounded-xl border border-slate-800">
-                            {/* ✨ 修正: ボタン表記を S / M / L に変更 */}
                             {['1','2','3'].map(w => (<button key={w} onClick={()=>setWeight(w)} className={`flex-1 py-2 text-[11px] font-black rounded-lg ${weight===w?'bg-slate-800 text-white shadow-inner':'text-slate-600'}`}>{w==='1'?'S':w==='2'?'M':'L'}</button>))}
                           </div>
                         </div>
@@ -375,7 +404,6 @@
                             </div>
                           )}
 
-                          {/* ✨ 修正: [ / ] ~ [ / ] のデュアル入力と TODAY ボタン */}
                           {freq === 'once' && (
                             <div className="flex items-center gap-2 mt-2">
                               <div className="flex-1 flex bg-slate-950 border border-slate-800 rounded-xl px-2 py-1 items-center">
@@ -418,12 +446,12 @@
 
                 <div id="canvas-root" ref={canvasRef} className="grid gap-2 sm:gap-3 grid-flow-dense auto-rows-min pb-24" style={{ gridTemplateColumns: `repeat(auto-fill, minmax(${zoom}px, 1fr))` }}>
                   {canvasTasks.map(task => {
-                    const progress = task.subTasks.length > 0 ? (task.subTasks.filter(st => st.completed).length / task.subTasks.length) * 100 : 0;
+                    // ✨ 孫タスクに対応した進捗計算
+                    const progress = calculateProgress(task);
                     const isFile = task.type === 'persistent';
                     const w = task.weight;
                     const daysSince = (Date.now() - task.lastUpdated) / (1000 * 60 * 60 * 24);
                     const todayStr = new Date().toISOString().split('T')[0];
-                    // ✨ 修正: 期日オーバー判定
                     const isOverdue = task.dueDate && todayStr > task.dueDate;
                     
                     return (
@@ -451,7 +479,6 @@
 
                           <div className="flex justify-between items-end">
                              <div className="flex flex-col">
-                               {/* ✨ 修正: キャンバス上に dueDate (期限) を表示 */}
                                {zoom >= 100 && task.dueDate && task.freq === 'once' && (
                                  <span className={`text-[7px] font-mono font-black ${isOverdue ? 'text-red-500' : 'text-orange-400/80'}`}>
                                     🎯{task.dueDate.slice(5)}
@@ -479,7 +506,6 @@
                 </div>
                 <div className="relative w-full h-[70vh] bg-slate-900/10 rounded-[2.5rem] border-4 border-dashed border-slate-900/50 overflow-hidden shadow-inner backdrop-blur-sm">
                   {archivedTasks.map((task, i) => {
-                    // ✨ 修正: Fail状態のスタイル調整
                     const isFailed = task.archiveStatus === 'failed';
                     return (
                       <div key={task.id} onClick={() => setActiveTaskId(task.id)} className={`absolute p-4 rounded-2xl border border-white/5 backdrop-blur-md flex items-center justify-center text-center shadow-2xl cursor-pointer hover:scale-110 hover:rotate-0 transition-all ${showArchiveAnima?'animate-slap':'opacity-0'}`} style={{left:`${task.pos.x}%`, top:`${task.pos.y}%`, width:`${95+task.weight*30}px`, height:`${95+task.weight*30}px`, '--rot':`${task.pos.rot}deg`, backgroundColor: isFailed ? 'rgba(71,85,105,0.2)' : (task.phase>=3?'rgba(245,158,11,0.1)':'rgba(79,70,229,0.1)'), filter: isFailed ? 'grayscale(100%) opacity(50%)' : 'none', animationDelay:`${i*0.06}s`, zIndex: i}}>
@@ -501,53 +527,123 @@
 
           {/* --- 詳細モーダル --- */}
           {activeTask && (
-            <div className="fixed inset-0 bg-slate-950/90 backdrop-blur-xl z-[150] flex items-center justify-center p-4 transition-all duration-300 animate-in fade-in" onClick={() => {setActiveTaskId(null); setIsEditingTitle(false);}}>
+            <div className="fixed inset-0 bg-slate-950/90 backdrop-blur-xl z-[150] flex items-center justify-center p-4 transition-all duration-300 animate-in fade-in" onClick={() => {setActiveTaskId(null); setIsEditingTitle(false); setActiveSubTaskId(null);}}>
               <div className="bg-slate-900 border border-slate-800 rounded-[2.5rem] w-full max-w-sm overflow-hidden shadow-2xl animate-in zoom-in duration-200" onClick={e=>e.stopPropagation()}>
                 <div className="p-8 border-b border-slate-800 bg-gradient-to-b from-slate-800/30 to-transparent">
                   <div className="flex justify-between items-start gap-4">
                     <div className="flex-1">
-                      {isEditingTitle ? (
+                      {/* ✨ 追加: 孫タスク画面のときの戻るボタン */}
+                      {activeSubTaskId && (
+                        <button onClick={() => setActiveSubTaskId(null)} className="text-[10px] font-black text-indigo-400 uppercase tracking-widest flex items-center gap-1 mb-2 hover:text-indigo-300 transition-colors">
+                          <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="3" d="M15 19l-7-7 7-7"></path></svg>
+                          BACK
+                        </button>
+                      )}
+                      
+                      {isEditingTitle && !activeSubTaskId ? (
                         <input autoFocus value={activeTask.title} className="bg-slate-950 border border-indigo-500 rounded-lg px-2 py-1 text-xl font-black w-full outline-none" onChange={e => setTasks(tasks.map(t=>t.id===activeTask.id?{...t, title: e.target.value}:t))} onBlur={()=>setIsEditingTitle(false)} onKeyPress={e=>e.key==='Enter' && setIsEditingTitle(false)}/>
                       ) : (
-                        <h2 className="font-black text-2xl leading-tight cursor-text hover:text-indigo-400 transition-colors" onClick={()=>setIsEditingTitle(true)}>{activeTask.title}</h2>
+                        <h2 className="font-black text-2xl leading-tight cursor-text hover:text-indigo-400 transition-colors" onClick={()=> !activeSubTaskId && setIsEditingTitle(true)}>{activeTask.title}</h2>
                       )}
                       <p className="text-[10px] text-slate-500 mt-3 font-black uppercase tracking-[0.2em]">
                         {activeTask.isArchived ? (activeTask.archiveStatus === 'failed' ? 'FAILED TASK' : 'ARCHIVED') : activeTask.type==='persistent'? `Phase ${activeTask.phase} File` : 'Volatile Task'}
                       </p>
                     </div>
-                    <button onClick={()=>{setActiveTaskId(null); setIsEditingTitle(false);}} className="text-slate-600 hover:text-white text-3xl leading-none transition-colors">&times;</button>
+                    <button onClick={()=>{setActiveTaskId(null); setIsEditingTitle(false); setActiveSubTaskId(null);}} className="text-slate-600 hover:text-white text-3xl leading-none transition-colors">&times;</button>
                   </div>
                 </div>
+                
                 <div className="p-8 space-y-3 max-h-[50vh] overflow-y-auto no-scrollbar">
-                  {activeTask.subTasks.map(sub => (
-                    <div key={sub.id} className={`flex items-center justify-between p-4 rounded-2xl border transition-all ${activeTask.isArchived ? 'bg-slate-900/50 border-transparent opacity-60' : 'bg-slate-950/50 border-slate-800 group hover:border-indigo-500/40 shadow-sm'}`}>
-                      <div className="flex items-center gap-4 flex-1 cursor-pointer" onClick={()=>{
-                        if(activeTask.isArchived) return;
-                        setTasks(tasks.map(t => t.id === activeTask.id ? {...t, lastUpdated: Date.now(), subTasks: t.subTasks.map(st => st.id === sub.id ? {...st, completed: !st.completed} : st)} : t));
-                      }}>
-                        <div className={`w-6 h-6 rounded-full border-2 flex items-center justify-center transition-all ${sub.completed?'bg-indigo-500 border-indigo-500':'border-slate-700'}`}>
-                          {sub.completed && <span className="text-slate-950 text-[10px] font-black">✓</span>}
-                        </div>
-                        <input onClick={e => e.stopPropagation()} className={`bg-transparent border-none outline-none text-sm font-bold flex-1 ${sub.completed?'line-through text-slate-600':'text-slate-200'}`} value={sub.text} onChange={e => setTasks(tasks.map(t=>t.id===activeTask.id?{...t, subTasks: t.subTasks.map(st=>st.id===sub.id?{...st, text: e.target.value}:st)}:t))} disabled={activeTask.isArchived}/>
-                      </div>
-                      {!activeTask.isArchived && <button onClick={(e)=>{e.stopPropagation(); setTasks(tasks.map(t=>t.id===activeTask.id?{...t, subTasks:t.subTasks.filter(s=>s.id!==sub.id)}:t))}} className="ml-2 text-slate-700 hover:text-red-500 transition-all text-xl">&times;</button>}
-                    </div>
-                  ))}
-                  {!activeTask.isArchived && (
-                    <input type="text" value={newSubText} onChange={e=>setNewSubText(e.target.value)} placeholder="具体的アクション..." className="w-full bg-slate-950/50 border border-slate-800 rounded-2xl px-5 py-4 text-sm focus:ring-1 ring-indigo-500 outline-none mt-2 placeholder:text-slate-700 font-bold" onKeyPress={e=>{if(e.key==='Enter' && newSubText){setTasks(tasks.map(t=>t.id===activeTask.id?{...t, subTasks:[...t.subTasks,{id:Date.now().toString(),text:newSubText,completed:false}]}:t)); setNewSubText('');}}}/>
+                  {!activeSubTaskId ? (
+                    /* --- 1. 子タスク（リスト）画面 --- */
+                    <>
+                      {activeTask.subTasks.map(sub => {
+                        const hasChecklists = sub.checklists && sub.checklists.length > 0;
+                        const isSubCompleted = hasChecklists ? sub.checklists.every(c=>c.completed) : sub.completed;
+                        
+                        return (
+                          <div key={sub.id} className={`flex items-center justify-between p-4 rounded-2xl border transition-all ${activeTask.isArchived ? 'bg-slate-900/50 border-transparent opacity-60' : 'bg-slate-950/50 border-slate-800 group hover:border-indigo-500/40 shadow-sm'}`}>
+                            <div className="flex items-center gap-4 flex-1 cursor-pointer" onClick={()=>{
+                              if(activeTask.isArchived) return;
+                              if (hasChecklists) {
+                                setActiveSubTaskId(sub.id);
+                              } else {
+                                setTasks(tasks.map(t => t.id === activeTask.id ? {...t, lastUpdated: Date.now(), subTasks: t.subTasks.map(st => st.id === sub.id ? {...st, completed: !st.completed} : st)} : t));
+                              }
+                            }}>
+                              <div className={`w-6 h-6 rounded-full border-2 flex items-center justify-center transition-all ${hasChecklists ? (isSubCompleted ? 'bg-indigo-500 border-indigo-500' : 'border-slate-500 border-dashed') : (isSubCompleted ? 'bg-indigo-500 border-indigo-500' : 'border-slate-700')}`}>
+                                {isSubCompleted && <span className="text-slate-950 text-[10px] font-black">✓</span>}
+                              </div>
+                              <input onClick={e => e.stopPropagation()} className={`bg-transparent border-none outline-none text-sm font-bold flex-1 ${isSubCompleted?'line-through text-slate-600':'text-slate-200'}`} value={sub.text} onChange={e => setTasks(tasks.map(t=>t.id===activeTask.id?{...t, subTasks: t.subTasks.map(st=>st.id===sub.id?{...st, text: e.target.value}:st)}:t))} disabled={activeTask.isArchived}/>
+                            </div>
+                            
+                            {/* ✨ 追加: Dive-in(＞) ボタンと削除ボタン */}
+                            {!activeTask.isArchived && (
+                              <div className="flex items-center gap-2 ml-2">
+                                <button onClick={(e)=>{e.stopPropagation(); setActiveSubTaskId(sub.id);}} className="text-indigo-400 hover:text-indigo-300 p-1.5 bg-indigo-500/10 hover:bg-indigo-500/20 rounded-lg transition-all">
+                                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M9 5l7 7-7 7"></path></svg>
+                                </button>
+                                <button onClick={(e)=>{e.stopPropagation(); setTasks(tasks.map(t=>t.id===activeTask.id?{...t, subTasks:t.subTasks.filter(s=>s.id!==sub.id)}:t))}} className="text-slate-700 hover:text-red-500 transition-all text-xl">&times;</button>
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })}
+                      {!activeTask.isArchived && (
+                        <input type="text" value={newSubText} onChange={e=>setNewSubText(e.target.value)} placeholder="具体的アクション..." className="w-full bg-slate-950/50 border border-slate-800 rounded-2xl px-5 py-4 text-sm focus:ring-1 ring-indigo-500 outline-none mt-2 placeholder:text-slate-700 font-bold" onKeyPress={e=>{if(e.key==='Enter' && newSubText){setTasks(tasks.map(t=>t.id===activeTask.id?{...t, subTasks:[...t.subTasks,{id:Date.now().toString(),text:newSubText,completed:false,checklists:[]}]}:t)); setNewSubText('');}}}/>
+                      )}
+                    </>
+                  ) : (
+                    /* --- 2. 孫タスク（チェックリスト）画面 --- */
+                    (() => {
+                      const activeSubTask = activeTask.subTasks.find(st => st.id === activeSubTaskId);
+                      if (!activeSubTask) return null;
+                      const checklists = activeSubTask.checklists || [];
+                      return (
+                        <>
+                          <div className="mb-4 text-sm font-black text-indigo-300 border-b border-slate-800 pb-3 flex items-center justify-between">
+                             <span>{activeSubTask.text}</span>
+                             <span className="text-[10px] text-slate-500 bg-slate-900 px-2 py-1 rounded-full">{checklists.filter(c=>c.completed).length} / {checklists.length}</span>
+                          </div>
+                          {checklists.map(chk => (
+                            <div key={chk.id} className={`flex items-center justify-between p-4 rounded-2xl border transition-all ${activeTask.isArchived ? 'bg-slate-900/50 border-transparent opacity-60' : 'bg-slate-950/50 border-slate-800 group hover:border-indigo-500/40 shadow-sm'}`}>
+                              <div className="flex items-center gap-4 flex-1 cursor-pointer" onClick={()=>{
+                                if(activeTask.isArchived) return;
+                                setTasks(tasks.map(t => t.id === activeTask.id ? {
+                                  ...t, lastUpdated: Date.now(),
+                                  subTasks: t.subTasks.map(st => st.id === activeSubTaskId ? {
+                                    ...st, checklists: (st.checklists||[]).map(c => c.id === chk.id ? {...c, completed: !c.completed} : c)
+                                  } : st)
+                                } : t));
+                              }}>
+                                <div className={`w-6 h-6 rounded-full border-2 flex items-center justify-center transition-all ${chk.completed?'bg-indigo-500 border-indigo-500':'border-slate-700'}`}>
+                                  {chk.completed && <span className="text-slate-950 text-[10px] font-black">✓</span>}
+                                </div>
+                                <input onClick={e => e.stopPropagation()} className={`bg-transparent border-none outline-none text-sm font-bold flex-1 ${chk.completed?'line-through text-slate-600':'text-slate-200'}`} value={chk.text} onChange={e => setTasks(tasks.map(t=>t.id===activeTask.id?{...t, subTasks: t.subTasks.map(st=>st.id===activeSubTaskId?{...st, checklists: (st.checklists||[]).map(c=>c.id===chk.id?{...c, text: e.target.value}:c)}:st)}:t))} disabled={activeTask.isArchived}/>
+                              </div>
+                              {!activeTask.isArchived && <button onClick={(e)=>{e.stopPropagation(); setTasks(tasks.map(t=>t.id===activeTask.id?{...t, subTasks:t.subTasks.map(st=>st.id===activeSubTaskId?{...st, checklists: st.checklists.filter(c=>c.id!==chk.id)}:st)}:t))}} className="ml-2 text-slate-700 hover:text-red-500 transition-all text-xl">&times;</button>}
+                            </div>
+                          ))}
+                          {!activeTask.isArchived && (
+                            <input type="text" value={newChecklistText} onChange={e=>setNewChecklistText(e.target.value)} placeholder="孫タスクを追加..." className="w-full bg-slate-950/50 border border-slate-800 rounded-2xl px-5 py-4 text-sm focus:ring-1 ring-indigo-500 outline-none mt-2 placeholder:text-slate-700 font-bold" onKeyPress={e=>{if(e.key==='Enter' && newChecklistText){setTasks(tasks.map(t=>t.id===activeTask.id?{...t, subTasks: t.subTasks.map(st=>st.id===activeSubTaskId?{...st, checklists: [...(st.checklists||[]), {id:Date.now().toString(),text:newChecklistText,completed:false}]}:st)}:t)); setNewChecklistText('');}}}/>
+                          )}
+                        </>
+                      );
+                    })()
                   )}
                 </div>
+                
                 <div className="p-6 bg-slate-950/30 flex justify-between px-10 items-center">
-                  <button onClick={()=>{if(confirm('完全に消去しますか？')){setTasks(tasks.filter(t=>t.id!==activeTask.id)); setActiveTaskId(null);}}} className="text-[11px] font-black text-red-900 hover:text-red-500 transition-colors uppercase tracking-widest">Delete</button>
+                  <button onClick={()=>{if(confirm('完全に消去しますか？')){setTasks(tasks.filter(t=>t.id!==activeTask.id)); setActiveTaskId(null); setActiveSubTaskId(null);}}} className="text-[11px] font-black text-red-900 hover:text-red-500 transition-colors uppercase tracking-widest">Delete</button>
                   <div className="flex gap-2">
-                    {/* ✨ 修正: Fail（諦める）ボタンの追加 */}
                     {!activeTask.isArchived && (
                        <button onClick={()=>failTaskAction(activeTask)} className="bg-slate-800 text-slate-400 text-[11px] px-5 py-2.5 rounded-xl font-black uppercase hover:bg-slate-700 transition-all">Fail</button>
                     )}
-                    {activeTask.type === 'persistent' && !activeTask.isArchived && activeTask.subTasks.length > 0 && activeTask.subTasks.every(s=>s.completed) && (
+                    {/* ✨ 修正: Phase UpとArchive判定を孫タスク対応の関数に変更 */}
+                    {activeTask.type === 'persistent' && !activeTask.isArchived && activeTask.subTasks.length > 0 && checkAllCompleted(activeTask) && (
                       <button onClick={()=>levelUpTask(activeTask.id)} className="bg-amber-600 text-white text-[11px] px-5 py-2.5 rounded-xl font-black uppercase hover:bg-amber-500 shadow-lg shadow-amber-900/20 active:scale-95 transition-all">Phase Up</button>
                     )}
-                    {!activeTask.isArchived && activeTask.subTasks.length > 0 && activeTask.subTasks.every(s=>s.completed) && (
+                    {!activeTask.isArchived && activeTask.subTasks.length > 0 && checkAllCompleted(activeTask) && (
                       <button onClick={()=>archiveTaskAction(activeTask)} className="bg-white text-slate-950 text-[11px] px-5 py-2.5 rounded-xl font-black hover:bg-slate-200 shadow-lg active:scale-95 transition-all">Archive</button>
                     )}
                   </div>
