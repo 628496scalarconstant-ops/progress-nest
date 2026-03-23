@@ -29,7 +29,6 @@
     .drawer-open { animation: slideIn 0.3s ease-out forwards; }
     .no-scrollbar::-webkit-scrollbar { display: none; }
     * { -webkit-tap-highlight-color: transparent; outline: none; }
-    /* ✨ 1本指でのスクロールを許可し、JSでピンチを処理する ✨ */
     #canvas-root { touch-action: pan-y; }
     .task-card { transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1); }
   </style>
@@ -40,20 +39,17 @@
   <script type="text/babel">
     const { useState, useEffect, useRef } = React;
 
-    // 言語辞書（多言語対応の土台）
     const i18n = {
       ja: { canvas: "キャンバス", archive: "履歴", add: "生成", settings: "設定", lang: "言語", themes: "テーマ", howto: "使い方", today: "TODAY ONLY", full: "⚠️ FULL", placeholder: "新しいタスクを生成..." },
       en: { canvas: "CANVAS", archive: "HISTORY", add: "Create", settings: "Settings", lang: "Language", themes: "Themes", howto: "How to", today: "TODAY ONLY", full: "⚠️ FULL", placeholder: "Create a new task..." }
     };
 
     function App() {
-      // --- 新規UI用ステート ---
       const userLang = navigator.language && navigator.language.startsWith('ja') ? 'ja' : 'en';
       const [lang, setLang] = useState(userLang);
       const [isMenuOpen, setIsMenuOpen] = useState(false);
       const [isInputFocused, setIsInputFocused] = useState(false);
 
-      // --- 既存のコアステート（完全復元） ---
       const [tasks, setTasks] = useState([]);
       const [activeTab, setActiveTab] = useState('canvas');
       const [activeTaskId, setActiveTaskId] = useState(null);
@@ -70,20 +66,19 @@
       const [weight, setWeight] = useState('1');
       const [selectedDays, setSelectedDays] = useState([]);
       const [selectedDates, setSelectedDates] = useState([]);
-      
       const [startDate, setStartDate] = useState('');
       const [dueDate, setDueDate] = useState('');
-      
-      // Nヶ月/N週間の「N」を保持するステート（初期値は1）
       const [intervalVal, setIntervalVal] = useState('1');
 
-      // Task in Task（孫階層）の表示用ステート
       const [activeSubTaskId, setActiveSubTaskId] = useState(null);
       const [newChecklistText, setNewChecklistText] = useState('');
 
+      // ✨ 追加: Undoトースト用ステート
+      const [undoInfo, setUndoInfo] = useState(null);
+      const undoTimeoutRef = useRef(null);
+
       const t = i18n[lang];
 
-      // ✨ ピンチズーム用のRef (1本指スクロール対応版) ✨
       const canvasRef = useRef(null);
       const zoomRef = useRef(zoom);
       useEffect(() => { zoomRef.current = zoom; }, [zoom]);
@@ -118,7 +113,6 @@
         return () => { el.removeEventListener('touchstart', handleTouchStart); el.removeEventListener('touchmove', handleTouchMove); };
       }, []);
 
-      // データ読み込み＆移行ロジック（完全復元）
       useEffect(() => {
         let saved = localStorage.getItem('nest-v2-data');
         let lastLogin = localStorage.getItem('nest-v2-login');
@@ -200,6 +194,20 @@
         setIsInputFocused(false);
       };
 
+      // ✨ 追加: 復元ロジック（ダミーデータのお掃除機能付き）
+      const restoreTaskAction = (taskId) => {
+        setTasks(prev => prev.map(t => {
+          if (t.id === taskId) {
+            const cleanedSubTasks = (t.subTasks.length === 1 && t.subTasks[0].id === 'auto') ? [] : t.subTasks;
+            return {...t, isArchived: false, archiveStatus: 'pending', subTasks: cleanedSubTasks};
+          }
+          return t;
+        }));
+        setActiveTaskId(null);
+        setActiveSubTaskId(null);
+        setUndoInfo(null);
+      };
+
       const archiveTaskAction = (task) => {
         if (task.type === 'persistent' && !confirm('この「ファイル」を完了として閉じますか？')) return;
         fireConfetti();
@@ -208,6 +216,11 @@
         setTasks(prev => prev.map(t => t.id === task.id ? {...t, subTasks: updatedSubTasks, isArchived: true, archiveStatus: 'completed', archivedAt: new Date().toISOString()} : t));
         setActiveTaskId(null);
         setActiveSubTaskId(null);
+        
+        // ✨ Undoトーストの発火
+        setUndoInfo({ id: task.id, text: "アーカイブ化" });
+        if (undoTimeoutRef.current) clearTimeout(undoTimeoutRef.current);
+        undoTimeoutRef.current = setTimeout(() => setUndoInfo(null), 4000);
       };
 
       const failTaskAction = (task) => {
@@ -216,6 +229,11 @@
         setTasks(prev => prev.map(t => t.id === task.id ? {...t, isArchived: true, archiveStatus: 'failed', archivedAt: new Date().toISOString()} : t));
         setActiveTaskId(null);
         setActiveSubTaskId(null);
+        
+        // ✨ Undoトーストの発火
+        setUndoInfo({ id: task.id, text: "Fail" });
+        if (undoTimeoutRef.current) clearTimeout(undoTimeoutRef.current);
+        undoTimeoutRef.current = setTimeout(() => setUndoInfo(null), 4000);
       };
 
       const levelUpTask = (pId) => {
@@ -233,17 +251,14 @@
         });
       };
 
-      // 親のゲージは「完了した子タスクの割合」で計算するように変更
       const calculateProgress = (task) => {
         if (!task.subTasks || task.subTasks.length === 0) return 0;
         let total = task.subTasks.length;
         let completed = 0;
         task.subTasks.forEach(st => {
           if (st.checklists && st.checklists.length > 0) {
-            // 孫タスクがある場合、すべて完了していれば子タスク1個分としてカウント
             if (st.checklists.every(c => c.completed)) completed += 1;
           } else {
-            // 孫タスクがない場合、子タスク自体の完了状態を見る
             if (st.completed) completed += 1;
           }
         });
@@ -256,9 +271,7 @@
         const todayStr = now.toISOString().split('T')[0];
         
         if (task.freq === 'once') return !task.startDate || todayStr >= task.startDate;
-        
         if (task.freq === 'daily') return true;
-        
         if (task.freq === 'weekly') {
           const createdDate = new Date(parseInt(task.id));
           const startOfCreatedWeek = new Date(createdDate.getFullYear(), createdDate.getMonth(), createdDate.getDate() - createdDate.getDay());
@@ -268,16 +281,13 @@
           const interval = task.interval || 1;
           return diffWeeks >= 0 && (diffWeeks % interval === 0) && task.selectedDays.includes(now.getDay());
         }
-
         if (task.freq === 'monthly') { 
           const createdDate = new Date(parseInt(task.id));
           const diffMonths = (now.getFullYear() - createdDate.getFullYear()) * 12 + (now.getMonth() - createdDate.getMonth());
           const interval = task.interval || 1;
-          
           if (diffMonths >= 0 && (diffMonths % interval === 0)) {
             const lastDayOfMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
             const todayDate = now.getDate();
-            
             return task.selectedDates.some(d => {
               if (d === todayDate) return true;
               if (d > lastDayOfMonth && todayDate === lastDayOfMonth) return true;
@@ -294,7 +304,7 @@
 
       return (
         <div className="min-h-screen flex flex-col relative">
-          {/* --- ハンバーガーメニュー (Drawer) --- */}
+          {/* --- ハンバーガーメニュー --- */}
           {isMenuOpen && (
             <div className="fixed inset-0 z-[100] bg-slate-950/80 backdrop-blur-sm" onClick={() => setIsMenuOpen(false)}>
               <div className="w-72 h-full bg-slate-900 border-r border-slate-800 p-6 drawer-open flex flex-col" onClick={e => e.stopPropagation()}>
@@ -313,7 +323,6 @@
                     <span className="text-[10px] bg-indigo-900 text-indigo-300 px-2 py-0.5 rounded-full">Premium 🔒</span>
                   </button>
                 </nav>
-                
                 <div className="mt-auto pt-6 border-t border-slate-800">
                   <a href="https://github.com/matte-navy" target="_blank" rel="noopener noreferrer" className="flex justify-between items-center w-full py-2 text-sm font-bold text-slate-500 hover:text-white transition-colors">
                     <span>𝕏 Support / Contact</span>
@@ -638,6 +647,11 @@
                 <div className="p-6 bg-slate-950/30 flex justify-between px-10 items-center">
                   <button onClick={()=>{if(confirm('完全に消去しますか？')){setTasks(tasks.filter(t=>t.id!==activeTask.id)); setActiveTaskId(null); setActiveSubTaskId(null);}}} className="text-[11px] font-black text-red-900 hover:text-red-500 transition-colors uppercase tracking-widest">Delete</button>
                   <div className="flex gap-2">
+                    {/* ✨ 追加: 復元（Restore）ボタン */}
+                    {activeTask.isArchived && (
+                       <button onClick={()=>restoreTaskAction(activeTask.id)} className="bg-indigo-600 text-white text-[11px] px-5 py-2.5 rounded-xl font-black uppercase hover:bg-indigo-500 shadow-lg active:scale-95 transition-all">Restore</button>
+                    )}
+                    
                     {!activeTask.isArchived && (
                        <button onClick={()=>failTaskAction(activeTask)} className="bg-slate-800 text-slate-400 text-[11px] px-5 py-2.5 rounded-xl font-black uppercase hover:bg-slate-700 transition-all">Fail</button>
                     )}
@@ -653,7 +667,15 @@
             </div>
           )}
 
-          {/* ✨ 修正: 使い方ポップアップ（完全網羅版） */}
+          {/* --- Undo トースト --- */}
+          {undoInfo && (
+            <div className="fixed bottom-24 left-1/2 -translate-x-1/2 bg-slate-800 border border-slate-700 px-6 py-3 rounded-full shadow-2xl z-[100] flex items-center gap-6 animate-in slide-in-from-bottom-5">
+              <span className="text-[11px] font-black text-slate-300">{undoInfo.text}しました</span>
+              <button onClick={() => restoreTaskAction(undoInfo.id)} className="text-[11px] font-black text-indigo-400 hover:text-indigo-300 uppercase tracking-widest">Undo (戻す)</button>
+            </div>
+          )}
+
+          {/* 使い方ポップアップ */}
           {showHowto && (
             <div className="fixed inset-0 bg-slate-950/90 backdrop-blur-xl z-[200] flex items-center justify-center p-4 animate-in fade-in" onClick={() => setShowHowto(false)}>
               <div className="bg-slate-900 border border-slate-800 rounded-[2.5rem] w-full max-w-sm overflow-hidden shadow-2xl p-8" onClick={e=>e.stopPropagation()}>
@@ -665,8 +687,7 @@
                       <div><p className="font-black text-white">■ TASKとFILE</p><p className="text-xs mt-1">【Task】単発の用事。サブタスクがなければワンタップで一撃完了。<br/>【File】長期プロジェクト。サブタスクを全消化するとPhase(LV)が上がります。</p></div>
                       <div><p className="font-black text-white">■ ネスト構造（Task in Task）</p><p className="text-xs mt-1">詳細画面で子タスクを追加後、右端の「＞」を押すと孫タスク（チェックリスト）を作成可能。孫の進捗は子タスクの背景ゲージに、子の進捗はキャンバスの親タイルの背景ゲージに連動します。</p></div>
                       <div><p className="font-black text-white">■ サイズと期間</p><p className="text-xs mt-1">【Size】S/M/Lでタイルの大きさが変化し、視覚的な重みを示します。<br/>【Schedule】[開始日]～[期限日]を設定可能。期限を過ぎると赤く警告されます。「TODAY」で今日を即入力できます。</p></div>
-                      <div><p className="font-black text-white">■ Fail（諦める勇気）</p><p className="text-xs mt-1">終わらなかったタスクは「Delete(完全消去)」するのではなく、「Fail」を押すことでグレーアウトして履歴に流せます。タスク負債の罪悪感を手放すための機能です。</p></div>
-                      <div><p className="font-black text-white">■ キャンバス表示の切り替え</p><p className="text-xs mt-1">上部の「Zoom」でタイルの大きさを一括変更。「TODAY ONLY」を「⚠️ FULL」に切り替えると、未来のタスクも含めた全てを俯瞰できます。</p></div>
+                      <div><p className="font-black text-white">■ Fail（諦める勇気）と 復元</p><p className="text-xs mt-1">終わらなかったタスクは「Fail」で履歴に流せます。誤タップで完了してしまった場合も、画面下の「Undo」か、履歴の「Restore」ボタンからすぐに復元可能です。</p></div>
                       <div><p className="font-black text-white">■ スマホアプリ化 (PWA)</p><p className="text-xs mt-1">ブラウザの共有メニューから「ホーム画面に追加」でフルスクリーン動作します。完全オフラインで動作し、データは外部に送信されません。</p></div>
                     </>
                   ) : (
@@ -675,8 +696,7 @@
                       <div><p className="font-black text-white">■ TASK vs FILE</p><p className="text-xs mt-1">[Task]: Single action. Clears instantly without sub-tasks.<br/>[File]: Multi-step project. Completing all sub-tasks triggers a Phase Up.</p></div>
                       <div><p className="font-black text-white">■ Task in Task (Nesting)</p><p className="text-xs mt-1">Add sub-tasks, then click "＞" to create grandchild checklists. Grandchild progress fills the sub-task background; sub-task progress fills the main canvas tile.</p></div>
                       <div><p className="font-black text-white">■ Size & Schedule</p><p className="text-xs mt-1">[Size]: S/M/L changes tile dimensions for visual weighting.<br/>[Schedule]: Set [Start] ~ [Due] dates. Overdue tasks turn red. Use "TODAY" for quick input.</p></div>
-                      <div><p className="font-black text-white">■ Fail (Letting Go)</p><p className="text-xs mt-1">If you can't complete a task, don't "Delete" it—click "Fail". It archives as grayscale, removing the guilt of uncompleted task debt.</p></div>
-                      <div><p className="font-black text-white">■ Canvas Controls</p><p className="text-xs mt-1">Adjust tile size with "Zoom". Toggle "TODAY ONLY" to "⚠️ FULL" to see all future tasks at a glance.</p></div>
+                      <div><p className="font-black text-white">■ Fail & Restore</p><p className="text-xs mt-1">Archive uncompleted tasks with "Fail". Accidentally completed a task? Recover it instantly with the "Undo" popup, or use "Restore" in the History tab.</p></div>
                       <div><p className="font-black text-white">■ Mobile App (PWA)</p><p className="text-xs mt-1">Use "Add to Home Screen" from your browser's share menu. Runs 100% offline with zero data sent to external servers.</p></div>
                     </>
                   )}
